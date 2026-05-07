@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intelligence Coverage — Operations Overview</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --bg-page: #f7f7f7;
+      --bg-card: #eeeeee;
+      --ink: #393e46;
+      --accent: #929aab;
+      --white: #ffffff;
+      --positive: #2d6a4f;
+      --warning: #9a6d1f;
+      --radius: 10px;
+      --gap: 18px;
+      --shadow: 0 2px 8px rgba(57, 62, 70, 0.08);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: var(--bg-page);
+      color: var(--ink);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    .dashboard-container {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: var(--gap);
+    }
+
+    .dashboard-header {
+      background: var(--ink);
+      color: var(--bg-page);
+      padding: 22px 26px;
+      border-radius: var(--radius);
+      margin-bottom: var(--gap);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .dashboard-header h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .dashboard-header .subtitle {
+      font-size: 0.82rem;
+      color: var(--accent);
+      margin-top: 6px;
+      max-width: 640px;
+    }
+
+    .filters {
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .filter-group label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+    }
+
+    .filter-group select {
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(146, 154, 171, 0.45);
+      background: rgba(247, 247, 247, 0.12);
+      color: var(--bg-page);
+      font-size: 13px;
+      min-width: 160px;
+    }
+
+    .filter-group select option {
+      background: var(--ink);
+      color: var(--bg-page);
+    }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: var(--gap);
+      margin-bottom: var(--gap);
+    }
+
+    .kpi-card {
+      background: var(--white);
+      border: 1px solid rgba(146, 154, 171, 0.35);
+      border-radius: var(--radius);
+      padding: 20px 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .kpi-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+
+    .kpi-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .kpi-meta {
+      font-size: 12px;
+      color: var(--accent);
+      margin-top: 6px;
+    }
+
+    .chart-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: var(--gap);
+      margin-bottom: var(--gap);
+    }
+
+    .chart-container {
+      background: var(--white);
+      border: 1px solid rgba(146, 154, 171, 0.35);
+      border-radius: var(--radius);
+      padding: 20px 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .chart-container h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 14px;
+    }
+
+    .chart-container canvas {
+      max-height: 300px;
+    }
+
+    .table-section {
+      background: var(--white);
+      border: 1px solid rgba(146, 154, 171, 0.35);
+      border-radius: var(--radius);
+      padding: 20px 22px;
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+    }
+
+    .table-section h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--ink);
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .data-table thead th {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 2px solid var(--bg-card);
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .data-table thead th:hover {
+      color: var(--ink);
+    }
+
+    .data-table tbody td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--bg-card);
+    }
+
+    .data-table tbody tr:hover {
+      background: var(--bg-page);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge-news { background: rgba(57, 62, 70, 0.12); color: var(--ink); }
+    .badge-social { background: rgba(146, 154, 171, 0.35); color: var(--ink); }
+    .badge-image { background: rgba(146, 154, 171, 0.5); color: var(--ink); }
+    .badge-tel { background: var(--bg-card); color: var(--ink); border: 1px solid var(--accent); }
+
+    .dashboard-footer {
+      margin-top: var(--gap);
+      padding: 16px;
+      font-size: 11px;
+      color: var(--accent);
+      line-height: 1.6;
+      border-top: 1px solid rgba(146, 154, 171, 0.4);
+    }
+
+    .dashboard-footer strong { color: var(--ink); }
+
+    @media (max-width: 768px) {
+      .chart-row { grid-template-columns: 1fr; }
+      .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media print {
+      body { background: white; }
+      .filters { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="dashboard-container">
+    <header class="dashboard-header">
+      <div>
+        <h1>Intelligence Coverage — Operations Overview</h1>
+        <p class="subtitle">
+          Cross-channel news &amp; social depth, redundancy-aware answers, visual identity hints, and telephony pivots — unified for analyst review (sample data).
+        </p>
+      </div>
+      <div class="filters">
+        <div class="filter-group">
+          <label for="filter-window">Window</label>
+          <select id="filter-window" aria-label="Time window">
+            <option value="7d">Last 7 days</option>
+            <option value="30d" selected>Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-channel">Channel focus</label>
+          <select id="filter-channel" aria-label="Channel filter">
+            <option value="all">All channels</option>
+            <option value="news">News &amp; web</option>
+            <option value="social">Social</option>
+            <option value="visual">Image / similarity</option>
+            <option value="telephony">Telephony</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <section class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-label">News &amp; web depth</div>
+        <div class="kpi-value" id="kpi-news">0</div>
+        <div class="kpi-meta" id="kpi-news-meta">Curated articles after dedup</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Social channel signals</div>
+        <div class="kpi-value" id="kpi-social">0</div>
+        <div class="kpi-meta" id="kpi-social-meta">Posts across monitored surfaces</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Redundancy removed</div>
+        <div class="kpi-value" id="kpi-dedup">0</div>
+        <div class="kpi-meta" id="kpi-dedup-meta">Merged near-duplicate claims</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Image match queue</div>
+        <div class="kpi-value" id="kpi-image">0</div>
+        <div class="kpi-meta" id="kpi-image-meta">Pending analyst confirmation</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Telephony pivots</div>
+        <div class="kpi-value" id="kpi-tel">0</div>
+        <div class="kpi-meta" id="kpi-tel-meta">Policy-gated correlation items</div>
+      </div>
+    </section>
+
+    <section class="chart-row">
+      <div class="chart-container">
+        <h3>Signal volume by channel (sample)</h3>
+        <canvas id="chart-channel" aria-label="Bar chart channel volume"></canvas>
+      </div>
+      <div class="chart-container">
+        <h3>Ingestion trend &amp; concise brief share (sample)</h3>
+        <canvas id="chart-trend" aria-label="Line chart trend"></canvas>
+      </div>
+    </section>
+
+    <section class="table-section">
+      <h3>Recent work queue — sortable (sample)</h3>
+      <div id="table-wrap"></div>
+    </section>
+
+    <footer class="dashboard-footer">
+      <p><strong>Sample data only.</strong> Replace the <code>DATA</code> object in this file with exports from your pipeline (e.g. verified claims, audit IDs).</p>
+      <p><strong>Compliance:</strong> News/social ingestion should follow platform ToS and applicable law. Phone-number correlation and face or image similarity must run under clear legal basis, written authorization where required, and data-minimization — not for harassment or non-consensual deanonymization.</p>
+      <p>Palette reference: <a href="https://colorhunt.co/palette/f7f7f7eeeeee393e46929aab" target="_blank" rel="noopener">Color Hunt — f7f7f7 / eeeeee / 393e46 / 929aab</a>. &mdash; Data as of: <span id="data-date"></span></p>
+    </footer>
+  </div>
+
+  <script>
+    const COLORS = {
+      ink: '#393e46',
+      accent: '#929aab',
+      card: '#eeeeee',
+      page: '#f7f7f7',
+    };
+
+    /** Sample rows — swap with real JSON from your collector / verifier */
+    const DATA = [
+      { id: 'W-1042', date: '2026-05-01', channel: 'news', title: 'Sector policy shift — wire recap', dedup_group: 'DG-12', brief_sent: true, policy: 'standard' },
+      { id: 'S-8831', date: '2026-05-02', channel: 'social', title: 'Executive quote thread (3 platforms)', dedup_group: 'DG-12', brief_sent: true, policy: 'standard' },
+      { id: 'S-8834', date: '2026-05-02', channel: 'social', title: 'Hashtag spike — regional protest narrative', dedup_group: 'DG-19', brief_sent: false, policy: 'standard' },
+      { id: 'V-201', date: '2026-05-03', channel: 'visual', title: 'Similarity cluster A ↔ press photo B', dedup_group: '—', brief_sent: false, policy: 'review_required' },
+      { id: 'N-410', date: '2026-05-04', channel: 'news', title: 'Long-form investigation — outlet X', dedup_group: 'DG-22', brief_sent: true, policy: 'standard' },
+      { id: 'T-055', date: '2026-05-04', channel: 'telephony', title: 'Number pivot → carrier & region ( gated )', dedup_group: '—', brief_sent: false, policy: 'authorization_required' },
+      { id: 'V-204', date: '2026-05-05', channel: 'visual', title: 'Reverse search overlaps — event Y', dedup_group: 'DG-19', brief_sent: true, policy: 'review_required' },
+      { id: 'S-8890', date: '2026-05-05', channel: 'social', title: 'Cross-language mirror accounts', dedup_group: 'DG-30', brief_sent: false, policy: 'standard' },
+    ];
+
+    const channelLabels = { news: 'News / web', social: 'Social', visual: 'Image / similarity', telephony: 'Telephony' };
+
+    function formatNum(n) {
+      return n.toLocaleString();
+    }
+
+    class Dashboard {
+      constructor(rows) {
+        this.rawData = rows;
+        this.filteredData = rows;
+        this.charts = {};
+        this.sortCol = 'date';
+        this.sortDir = 'desc';
+        this.init();
+      }
+
+      init() {
+        document.getElementById('data-date').textContent = new Date().toISOString().slice(0, 10);
+        document.getElementById('filter-window').addEventListener('change', () => this.applyFilters());
+        document.getElementById('filter-channel').addEventListener('change', () => this.applyFilters());
+        this.applyFilters();
+      }
+
+      applyFilters() {
+        const ch = document.getElementById('filter-channel').value;
+        this.filteredData = this.rawData.filter((row) => {
+          if (ch === 'all') return true;
+          return row.channel === ch;
+        });
+        this.renderKPIs();
+        this.renderCharts();
+        this.renderTable();
+      }
+
+      renderKPIs() {
+        const d = this.filteredData;
+        const news = d.filter((r) => r.channel === 'news').length;
+        const social = d.filter((r) => r.channel === 'social').length;
+        const visual = d.filter((r) => r.channel === 'visual').length;
+        const tel = d.filter((r) => r.channel === 'telephony').length;
+        const dedupSets = new Set(d.map((r) => r.dedup_group).filter((g) => g && g !== '—'));
+        const mergedEstimate = Math.max(0, d.length - dedupSets.size);
+
+        document.getElementById('kpi-news').textContent = formatNum(news);
+        document.getElementById('kpi-social').textContent = formatNum(social);
+        document.getElementById('kpi-dedup').textContent = formatNum(mergedEstimate);
+        document.getElementById('kpi-image').textContent = formatNum(visual);
+        document.getElementById('kpi-tel').textContent = formatNum(tel);
+
+        const fch = document.getElementById('filter-channel').value;
+        const filteredNote = fch !== 'all'
+          ? 'Filtered snapshot — set channel to "All" for full totals'
+          : 'Curated articles after dedup';
+        document.getElementById('kpi-news-meta').textContent = filteredNote;
+        document.getElementById('kpi-social-meta').textContent = 'Posts across monitored surfaces';
+        document.getElementById('kpi-dedup-meta').textContent = 'Merged near-duplicate claim groups (est.)';
+      }
+
+      renderCharts() {
+        const d = this.filteredData;
+        const counts = {
+          news: d.filter((r) => r.channel === 'news').length,
+          social: d.filter((r) => r.channel === 'social').length,
+          visual: d.filter((r) => r.channel === 'visual').length,
+          telephony: d.filter((r) => r.channel === 'telephony').length,
+        };
+        const labels = ['News / web', 'Social', 'Image / similarity', 'Telephony'];
+        const barData = [counts.news, counts.social, counts.visual, counts.telephony];
+
+        if (this.charts.bar) this.charts.bar.destroy();
+        const ctxBar = document.getElementById('chart-channel').getContext('2d');
+        this.charts.bar = new Chart(ctxBar, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Items',
+              data: barData,
+              backgroundColor: [
+                'rgba(57, 62, 70, 0.75)',
+                'rgba(146, 154, 171, 0.85)',
+                'rgba(57, 62, 70, 0.45)',
+                'rgba(146, 154, 171, 0.55)',
+              ],
+              borderColor: COLORS.ink,
+              borderWidth: 1,
+              borderRadius: 6,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: { beginAtZero: true, ticks: { stepSize: 1 } },
+              x: { grid: { display: false } },
+            },
+          },
+        });
+
+        const trendLabels = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+        const ingest = [12, 19, 15, 22];
+        const briefShare = [62, 68, 71, 74];
+
+        if (this.charts.line) this.charts.line.destroy();
+        const ctxLine = document.getElementById('chart-trend').getContext('2d');
+        this.charts.line = new Chart(ctxLine, {
+          type: 'line',
+          data: {
+            labels: trendLabels,
+            datasets: [
+              {
+                label: 'Ingested items (sample trend)',
+                data: ingest,
+                borderColor: COLORS.ink,
+                backgroundColor: 'rgba(57, 62, 70, 0.12)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 4,
+              },
+              {
+                label: 'Briefs marked concise / low-redundancy %',
+                data: briefShare,
+                borderColor: COLORS.accent,
+                backgroundColor: 'rgba(146, 154, 171, 0.15)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 4,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { position: 'top', labels: { usePointStyle: true, color: COLORS.ink } },
+            },
+            scales: {
+              y: {
+                beginAtZero: true,
+                grid: { color: 'rgba(146, 154, 171, 0.25)' },
+              },
+              x: { grid: { display: false } },
+            },
+          },
+        });
+      }
+
+      renderTable() {
+        const d = [...this.filteredData];
+        d.sort((a, b) => {
+          let av = a[this.sortCol];
+          let bv = b[this.sortCol];
+          if (this.sortCol === 'date') {
+            av = new Date(av);
+            bv = new Date(bv);
+          }
+          const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+          return this.sortDir === 'asc' ? cmp : -cmp;
+        });
+
+        const columns = [
+          { field: 'id', label: 'ID' },
+          { field: 'date', label: 'Date' },
+          { field: 'channel', label: 'Channel' },
+          { field: 'title', label: 'Summary' },
+          { field: 'dedup_group', label: 'Dedup' },
+          { field: 'brief_sent', label: 'Concise brief' },
+          { field: 'policy', label: 'Policy gate' },
+        ];
+
+        const channelClass = (c) =>
+          ({ news: 'badge-news', social: 'badge-social', visual: 'badge-image', telephony: 'badge-tel' }[c] || 'badge-news');
+
+        let html = '<table class="data-table"><thead><tr>';
+        columns.forEach((col) => {
+          const arrow = this.sortCol === col.field ? (this.sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+          html += `<th data-field="${col.field}">${col.label}${arrow}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+
+        d.forEach((row) => {
+          html += '<tr>';
+          html += `<td>${row.id}</td>`;
+          html += `<td>${row.date}</td>`;
+          html += `<td><span class="badge ${channelClass(row.channel)}">${channelLabels[row.channel] || row.channel}</span></td>`;
+          html += `<td>${row.title}</td>`;
+          html += `<td>${row.dedup_group}</td>`;
+          html += `<td>${row.brief_sent ? 'Yes' : 'No'}</td>`;
+          html += `<td>${row.policy.replace(/_/g, ' ')}</td>`;
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+
+        const wrap = document.getElementById('table-wrap');
+        wrap.innerHTML = html;
+
+        wrap.querySelectorAll('th[data-field]').forEach((th) => {
+          th.addEventListener('click', () => {
+            const field = th.getAttribute('data-field');
+            if (this.sortCol === field) this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+            else {
+              this.sortCol = field;
+              this.sortDir = 'desc';
+            }
+            this.renderTable();
+          });
+        });
+      }
+    }
+
+    const dashboard = new Dashboard(DATA);
+  </script>
+</body>
+</html>

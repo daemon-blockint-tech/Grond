@@ -1,0 +1,13 @@
+{
+  "name": "grond-examples",
+  "private": true,
+  "description": "Proxy scripts — real app lives in company-research-ui/",
+  "scripts": {
+    "dev": "npm run dev --prefix company-research-ui",
+    "dev:clean": "npm run dev:clean --prefix company-research-ui",
+    "dev:turbo": "npm run dev:turbo --prefix company-research-ui",
+    "build": "npm run build --prefix company-research-ui",
+    "start": "npm run start --prefix company-research-ui",
+    "lint": "npm run lint --prefix company-research-ui"
+  }
+}

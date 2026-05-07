@@ -1,0 +1,74 @@
+---
+description: Core project conventions for Grond — Agentic OSINT Platform (v2)
+alwaysApply: true
+---
+
+# Grond — Core Project Context (v2)
+
+## What Is Grond
+
+Grond is an **Agentic OSINT** platform with a **TypeScript + Python hybrid architecture**:
+- **TypeScript** (`orchestration/`) — Claude Agent SDK agentic loop, BullMQ job queue, Neo4j graph client, pino logging, OTel tracing
+- **Python** (`src/`) — FastAPI tool adapters, collect/enrich/verify/report pipeline, pgvector/Qdrant embeddings, S3 artifact store
+
+## Architecture in One Line
+
+```
+Next.js → FastAPI / BullMQ → Claude Agent SDK (TS) → OSINT tools (Python) → Neo4j + pgvector + S3 → IntelReport
+```
+
+## Language & Framework Standards
+
+### TypeScript (`orchestration/`)
+- **ES2022 modules** (`"type": "module"`); import paths end in `.js`
+- **Claude Agent SDK** (`@anthropic-ai/sdk`) for all agent/tool loops
+- **Zod** for all input/output schemas at HTTP boundaries
+- **BullMQ + ioredis** for `osint-scan` job queue
+- **pino** for structured logging — never `console.log` in production
+- **OpenTelemetry** via `withSpan(name, fn)` for every tool call
+
+### Python (`src/`)
+- **Python 3.12+**, **FastAPI**, **Pydantic v2**, `ruff` lint, `pytest`
+- All endpoints and pipeline stages are `async def`
+- **structlog** for audit logging — `AuditLogger.record()` on every tool call
+- **OpenTelemetry** via `pipeline_span(name)` context manager
+
+## Naming Conventions
+
+- TypeScript agents: `{domain}-orchestrator.ts`, `{tool}.ts`
+- Python tools: `{tool_name}_tool.py`
+- Python models: PascalCase classes in `src/models/`
+- API routes: snake_case, versioned `/api/v1/`
+- BullMQ queues: kebab-case (`osint-scan`, `graph-index`, `embed-index`)
+
+## Error Handling
+
+```python
+# Python tool adapters — always wrap external API errors
+try:
+    result = await shodan_client.search(query)
+except ShodanAPIError as e:
+    raise ToolExecutionError(tool="shodan", cause=e) from e
+```
+
+```typescript
+// TypeScript tool wrappers — always validate with Zod
+const data = await apiFetch<unknown>("/api/v1/tools/shodan", {...});
+return ShodanQueryOutput.parse(data);  // throws ZodError on schema mismatch
+```
+
+## Environment Config
+
+All secrets via environment variables. Python uses `pydantic-settings`; TypeScript uses `dotenv`:
+- `SHODAN_API_KEY`, `TAVILY_API_KEY`, `ANTHROPIC_API_KEY`
+- `DATABASE_URL`, `REDIS_URL`, `NEO4J_URI`
+- `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`
+- `OTEL_EXPORTER_OTLP_ENDPOINT`, `SENTRY_DSN`
+
+## Audit Logging
+
+Every OSINT query **must** be logged with: `analyst_id`, `target`, `tool_used`, `timestamp`, `session_id`.
+- Python: `AuditLogger` from `src/core/audit.py`
+- TypeScript: `logger.info("tool_dispatch", { tool, session, target })`
+
+Never bypass the audit trail for any reason.

@@ -1,0 +1,221 @@
+---
+description: Twitter / X OSINT integration patterns (Bellingcat methodology)
+globs:
+  - src/tools/twitter_tool.py
+  - src/tools/twitter_query_builder.py
+  - orchestration/src/tools/grond-api.ts
+  - orchestration/src/agents/osint-orchestrator.ts
+alwaysApply: false
+---
+
+# Twitter OSINT Patterns (Bellingcat methodology)
+
+## Source & Reference
+
+**Official X (docs.x.com) for agents:** full corpus [llms-full.txt](https://docs.x.com/llms-full.txt), X API index [x-api/llms.txt](https://docs.x.com/x-api/llms.txt), TypeScript XDK index [xdks/typescript/llms.txt](https://docs.x.com/xdks/typescript/llms.txt), agent skill [skill.md](https://docs.x.com/skill.md), TS XDK overview [overview.md](https://docs.x.com/xdks/typescript/overview.md). See `AGENTS.md` § **X API — official documentation (agents)**.
+
+Bellingcat Advanced Search guide:
+https://bellingcat.gitbook.io/toolkit/more/all-tools/twitter-advanced-search
+
+Extended operator reference:
+https://github.com/igorbrigadir/twitter-advanced-search
+
+X API v2 docs:
+https://developer.twitter.com/en/docs/twitter-api/v1/rules-and-filtering/search-operators
+
+---
+
+## 1. Operator philosophy
+
+Twitter Advanced Search works with **boolean operators** that compose linearly into an X API v2 query string.
+
+| UI field              | X API v2 operator              |
+|-----------------------|-------------------------------|
+| All of these words    | `keyword1 keyword2` (AND)     |
+| This exact phrase     | `"exact phrase"`               |
+| Any of these words    | `(word1 OR word2)`             |
+| None of these words   | `-word`                        |
+| Hashtags              | `#hashtag`                    |
+| Language              | `lang:en`                     |
+| From accounts         | `from:handle`                 |
+| To accounts           | `to:handle`                   |
+| Mentions              | `@handle`                     |
+| Links only            | `has:links`                   |
+| Specific URL/domain   | `url:example.com`             |
+| Replies only          | `is:reply`                    |
+| Exclude replies       | `-is:reply`                   |
+| Exclude retweets      | `-is:retweet`                 |
+| Media present         | `has:media` / `has:images`    |
+| Native video          | `filter:native_video`         |
+| Min likes             | `min_faves:100`               |
+| Min retweets          | `min_retweets:50`             |
+| Min replies           | `min_replies:10`              |
+| Date since            | `since:2024-01-01`            |
+| Date until            | `until:2024-03-31`            |
+| Geo (place, slug/token) | `near:chicago within:2mi` or `near:"New York" within:10km` |
+| Geo (coordinates)       | `geocode:40.7128,-74.0060,10mi` (radius mi/km) |
+
+### Location operators & caveats (Bellingcat)
+
+Guide: [Twitter Location Search](https://bellingcat.gitbook.io/toolkit/more/all-tools/twitter-location-search).
+
+- Combine **`near:place`** with **`within:radius`** (`mi` or `km`), or use **`geocode:lat,lon,radius`** (e.g. `geocode:40.7128,-74.0060,10mi`).
+- **Maximum geo radius:** X limits **`geocode:` / geo search radius to 25 miles**. Grond clamps larger radii in `clamp_within_radius_str` / `within_miles` / `within_km`.
+- **Provenance is mixed:** results may reflect self-reported tweet location, profile location, or device GPS — treat matches as **noisy**; corroborate with independent sources (see `.cursor/rules/accuracy-patterns.mdc`).
+- **Limited historical geo:** profile-driven georeference is often only reliable on recent windows (~last week in documented studies — see [Bellingcat geofenced COVID case study, May 2021](https://www.bellingcat.com/resources/2021/05/19/geofenced-searches-on-twitter-a-case-study-detailing-south-asias-covid-crisis/)).
+- **Ethics / privacy:** minimize identifying detail in stored outputs; favour anonymization where appropriate; never substitute Twitter geo alone for ground truth.
+
+Use `TwitterOsintTemplates.geo_event` or `location_crisis_monitor`; optional API fields `near_place`, `within_radius`, `geocode_lat`/`geocode_lon`/`geocode_radius` wire through `TwitterInput` → `_resolve_query`.
+
+---
+
+## 2. Evidence tier rules
+
+Twitter data defaults to **COMMUNITY** tier (`SourceTier.COMMUNITY`).
+Upgrade criteria:
+- Verified account (`is_verified=True`) → `SourceTier.MEDIA`
+- Possibly sensitive / anonymous source → `SourceTier.ANONYMOUS`
+
+Rationale from Bellingcat: "Verification and Source Evaluation — critically evaluating
+the source and credibility of information found through advanced search is crucial
+to avoid spreading misinformation."
+
+Never auto-promote a tweet to OFFICIAL or REGULATOR tier in code.
+Those upgrades must be applied manually by a human analyst.
+
+---
+
+## 3. Claim type mapping
+
+| Signal                                          | `ClaimType`              |
+|-------------------------------------------------|--------------------------|
+| Any tweet mentioning the target                 | `SOCIAL_POST`            |
+| Tweet contains breach/leak keywords             | `CREDENTIAL_EXPOSURE`    |
+| Tweet contains 3+ hashtags                      | `HASHTAG_ACTIVITY`       |
+| Tweet has media attachments                     | `MEDIA_MENTION`          |
+| Mapped interactions between accounts            | `ACCOUNT_NETWORK`        |
+
+---
+
+## 4. OSINT intent templates
+
+Use `TwitterOsintTemplates` for all standard OSINT tasks.
+Do NOT write raw queries inline — use the builder for operator safety.
+
+```python
+from datetime import date, timedelta
+from src.tools.twitter_query_builder import TwitterOsintTemplates, TwitterQueryBuilder
+
+# Company monitoring — 3 variants returned
+queries = TwitterOsintTemplates.company_mentions("Acme Corp", days_back=30)
+
+# Breach/leak monitoring — high-signal queries
+queries = TwitterOsintTemplates.breach_leak_monitor("acmecorp.com")
+
+# Protest / hashtag campaign (Bellingcat use case #1)
+queries = TwitterOsintTemplates.hashtag_campaign(
+    "June3Coup", language="my", min_engagement=10
+)
+
+# Person research — from/to/mentions variants
+queries = TwitterOsintTemplates.person_research(
+    "John Doe", handle="johndoe_handle"
+)
+
+# Geo-event with media evidence (keyword + near / geocode via template args or TwitterInput fields)
+queries = TwitterOsintTemplates.geo_event(
+    ["protest", "demonstration"],
+    location="Dhaka",
+    radius="10km",
+    has_media=True,
+    since=date(2024, 6, 1),
+    until=date(2024, 6, 15),
+)
+
+# Crisis-style monitoring with default tighter radius
+queries = TwitterOsintTemplates.location_crisis_monitor(
+    ["flood", "evacuation"],
+    near_place="chennai",
+    radius="15mi",
+    since=date.today() - timedelta(days=3),
+)
+```
+
+---
+
+## 5. Raw query builder
+
+When templates don't fit, use `TwitterQueryBuilder` directly.
+All methods are fluent (chainable). Build returns a string.
+
+```python
+q = (
+    TwitterQueryBuilder()
+    .exact_phrase("nginx data breach")
+    .none_of("movie", "game")
+    .hashtag("infosec")
+    .min_likes(50)
+    .exclude_retweets()
+    .since("2024-01-01")
+    .build()
+)
+# → '"nginx data breach" -movie -game #infosec min_faves:50 -is:retweet since:2024-01-01'
+```
+
+---
+
+## 6. API tier selection
+
+| Access tier              | Endpoint                        | Date range | Rate limit          |
+|--------------------------|--------------------------------|------------|---------------------|
+| Free (bearer token)      | `/tweets/search/recent`        | Last 7 days | 1 req / 15 min     |
+| Basic / Pro              | `/tweets/search/recent`        | Last 7 days | Higher              |
+| Academic / Enterprise    | `/tweets/search/all`           | Since 2006  | 1 request / 1s      |
+
+Set `full_archive: True` only when the target requires historical data pre-7 days.
+Default to `full_archive: False` unless the analyst explicitly enables it.
+
+---
+
+## 7. Limitations to surface in reports (Bellingcat §Limitations)
+
+The verifier and reporter MUST note these caveats when Twitter evidence is present:
+
+1. **Handle changes**: search under old handles won't return posts from new handles.
+2. **Exact-match only**: spelling variants and typos are silently missed.
+3. **Common keywords**: broad terms return noise — always filter aggressively.
+4. **Account required**: public search data requires a signed-in account (API bearer token).
+5. **"None of these words" is unreliable**: may not exclude all terms.
+6. **No domain filter** on `has_links` — use `url:domain` for specificity.
+7. **Private + deleted tweets** are absent from results.
+8. **No built-in media filter** in UI — use `has:media` operator explicitly.
+9. **Geo / location filters**: noisy provenance (profile vs GPS vs declared place), spoofing risk, **25 mi max** radius, weaker geo on older material — corroborate (see Location operators above).
+
+---
+
+## 8. Ethical constraints
+
+From Bellingcat:
+- "Be mindful of exposed information: advanced search can inadvertently reveal
+  personal information like faces, locations, or identifying details."
+- "Minimize privacy risks when incorporating search results into reports."
+
+In Grond code:
+- Do NOT store raw tweet text longer than 500 characters (already enforced in `twitter_tool.py`).
+- Do NOT store or log full user DMs or profile email fields.
+- Set `requires_review = True` on any tweet that appears to identify a private individual.
+- Always cite tweet URL + timestamp in `Provenance.source_url` + `collected_at`.
+
+---
+
+## 9. FastAPI registration
+
+Register the endpoint in `src/api/main.py`:
+
+```python
+from src.tools.twitter_tool import TwitterInput, TwitterOutput, twitter_search_endpoint
+
+@app.post("/api/v1/tools/twitter", response_model=TwitterOutput)
+async def twitter_search(inp: TwitterInput) -> TwitterOutput:
+    return await twitter_search_endpoint(inp)
+```

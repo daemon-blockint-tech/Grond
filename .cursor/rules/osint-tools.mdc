@@ -1,0 +1,115 @@
+---
+description: OSINT tool integration patterns for Shodan, Nmap, Tavily, and web intelligence tools
+globs: src/tools/**/*.py
+alwaysApply: false
+---
+
+# OSINT Tool Integration Patterns
+
+## Shodan Tool (`src/tools/shodan_tool.py`)
+
+Use the `shadowscatcher/shodan` Python client. Always pass `AsyncClient`:
+
+```python
+from shodan import AsyncClient as AsyncShodan
+from src.models import ShodanFinding
+
+async def search_shodan(query: str, limit: int = 100) -> list[ShodanFinding]:
+    async with AsyncShodan(api_key=settings.shodan_api_key) as client:
+        results = await client.search(query, limit=limit)
+    return [ShodanFinding.from_raw(r) for r in results.get("matches", [])]
+```
+
+**Valid Shodan filters to use:**
+- `ip:`, `port:`, `org:`, `hostname:`, `net:`, `product:`, `version:`, `vuln:`
+- Combine with boolean: `apache port:443 country:US`
+
+**Rate limits:** 1 req/sec on free tier; wrap with `asyncio.sleep(1)` between calls.
+
+## Nmap Tool (`src/tools/nmap_tool.py`)
+
+Use `python-nmap` wrapper. **ONLY call against authorized targets.**
+
+```python
+import nmap
+from src.models import NmapScanResult
+
+def run_nmap_scan(target: str, ports: str = "1-1024", args: str = "-sV") -> NmapScanResult:
+    scanner = nmap.PortScanner()
+    scanner.scan(hosts=target, ports=ports, arguments=args)
+    return NmapScanResult.from_nmap(scanner[target])
+```
+
+**Recommended scan profiles:**
+- `"-sV --open -T4"` — Fast service version detection
+- `"-sC -sV"` — Default scripts + version (thorough)
+- `"-A"` — OS detection (requires root; use sparingly)
+
+**Always check authorization before calling:**
+
+```python
+if not await authorization_service.is_authorized(target, analyst_id):
+    raise UnauthorizedScanError(target=target, analyst=analyst_id)
+```
+
+## Ncrack Tool (`src/tools/ncrack_tool.py`)
+
+Ncrack is for **authorized** penetration testing only. Wrap as a subprocess call:
+
+```python
+import asyncio
+
+async def run_ncrack(target: str, services: list[str], wordlist: str) -> str:
+    assert await authorization_service.is_authorized(target), "Must be authorized"
+    cmd = ["ncrack", "-v", f"{target}", "--user", "admin", "-P", wordlist] + services
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
+    stdout, _ = await proc.communicate()
+    return stdout.decode()
+```
+
+## Tavily Web Intelligence (`src/tools/tavily_tool.py`)
+
+```python
+from tavily import TavilyClient
+
+async def web_search(query: str, max_results: int = 10, search_depth: str = "advanced") -> list[dict]:
+    client = TavilyClient(api_key=settings.tavily_api_key)
+    response = client.search(
+        query=query,
+        search_depth=search_depth,
+        max_results=max_results,
+        include_answer=True,
+        include_raw_content=False,
+    )
+    return response.get("results", [])
+```
+
+**Use `search_depth="advanced"` for OSINT tasks** — returns more context.
+
+## theHarvester (`src/tools/harvester_tool.py`)
+
+Passive-first wrapper around [laramies/theHarvester](https://github.com/laramies/theHarvester):
+default `-b` sources are `duckduckgo,crtsh`. **DNS brute (`-c`), DNS lookup/resolve,
+takeover, screenshots, API scan, Shodan follow-up** require
+`allow_active_techniques` plus `require_authorization()` (same pattern as Nmap).
+
+**Privacy:** harvested emails are mapped to `ClaimType.EMAIL_DISCOVERY` with
+`requires_review=True` — follow Grond retention rules; do not store unnecessary PII.
+
+## Finding Model
+
+All tools must return `Finding` objects — never raw dicts:
+
+```python
+from pydantic import BaseModel
+from datetime import datetime
+
+class Finding(BaseModel):
+    source: str          # "shodan" | "nmap" | "tavily" | "manual"
+    target: str
+    finding_type: str    # "open_port" | "vulnerability" | "web_result" | etc.
+    data: dict
+    confidence: float    # 0.0-1.0
+    timestamp: datetime
+    raw_ref: str | None  # URL or query that produced this finding
+```
