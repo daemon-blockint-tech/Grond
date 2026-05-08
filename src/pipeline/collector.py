@@ -83,7 +83,12 @@ class CollectionRequest:
     nmap_profile: ScanProfile = ScanProfile.STANDARD
 
     def effective_shodan_query(self) -> str:
-        return self.shodan_query or f"hostname:{self.target} OR ip:{self.target}"
+        if self.shodan_query:
+            return self.shodan_query
+        import re
+        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", self.target):
+            return f"net:{self.target}"
+        return f"hostname:{self.target}"
 
     def effective_tavily_queries(self) -> list[str]:
         if self.tavily_query_templates:
