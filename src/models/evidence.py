@@ -47,6 +47,8 @@ class ClaimType(StrEnum):
     EMAIL_DISCOVERY = "email_discovery"        # email harvested from public OSINT (PII-sensitive)
     HOST_DISCOVERY = "host_discovery"          # IP or host association from OSINT harvester
     FILE_METADATA = "file_metadata"  # uploaded artifact metadata (ExifTool / Exiv2)
+    STEGANOGRAPHY = "steganography"  # hidden data detection (LSB, stego signatures, carving)
+    STEGO_EMBEDDED = "stego_embedded"  # extracted embedded content (decoded payload)
 
 
 class SourceTool(StrEnum):
@@ -60,6 +62,8 @@ class SourceTool(StrEnum):
     EDGAR = "edgar"  # Bellingcat EDGAR tool — SEC EDGAR full-text search (edgar-tool)
     EXIFTOOL = "exiftool"  # Phil Harvey ExifTool — Metaforge-class metadata reports
     EXIV2 = "exiv2"  # https://github.com/Exiv2/exiv2 image Exif/IPTC/XMP CLI
+    STEGOVERITAS = "stegoveritas"  # bannsec/stegoVeritas — multi-method stego analysis
+    STEGO_LSB = "stego_lsb"  # pure-Python LSB extraction fallback
     MANUAL = "manual"
 
 
@@ -110,6 +114,8 @@ TOOL_DEFAULT_TIER: dict[SourceTool, SourceTier] = {
     SourceTool.EDGAR: SourceTier.REGULATOR,  # SEC filing index (official regulatory)
     SourceTool.EXIFTOOL: SourceTier.COMMUNITY,  # analyst-supplied file; may contain spoofed/stripped tags
     SourceTool.EXIV2: SourceTier.COMMUNITY,  # like ExifTool; image-focused CLI
+    SourceTool.STEGOVERITAS: SourceTier.COMMUNITY,  # automated multi-method stego analysis
+    SourceTool.STEGO_LSB: SourceTier.COMMUNITY,  # basic LSB extraction; lower confidence
     SourceTool.MANUAL: SourceTier.OFFICIAL,
 }
 
@@ -138,6 +144,8 @@ CLAIM_VALUE_KEYS: dict[ClaimType, list[str]] = {
     ClaimType.EMAIL_DISCOVERY: ["email"],
     ClaimType.HOST_DISCOVERY: ["ip"],
     ClaimType.FILE_METADATA: ["artifact_name", "format", "summary"],
+    ClaimType.STEGANOGRAPHY: ["artifact_name", "method", "detection_confidence"],
+    ClaimType.STEGO_EMBEDDED: ["artifact_name", "method", "payload_size", "payload_preview"],
 }
 
 # Claim types that require analyst review regardless of confidence
@@ -146,6 +154,8 @@ HIGH_RISK_CLAIM_TYPES: frozenset[ClaimType] = frozenset(
         ClaimType.CREDENTIAL_EXPOSURE,
         ClaimType.EMAIL_DISCOVERY,
         ClaimType.FILE_METADATA,  # may embed GPS, device IDs, authorship — analyst review
+        ClaimType.STEGANOGRAPHY,  # hidden content may contain illicit material
+        ClaimType.STEGO_EMBEDDED,  # extracted payloads need human verification
     }
 )
 

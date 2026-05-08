@@ -16,6 +16,7 @@ import { NpcapCard } from "@/components/recon/npcap-card";
 import { OsintmapCard } from "@/components/recon/osintmap-card";
 import { TavilyExtractCard } from "@/components/recon/tavily-extract-card";
 import { TavilySearchCard } from "@/components/recon/tavily-search-card";
+import { StegoCard } from "@/components/recon/stego-card";
 import { GrondLogo } from "@/components/grond-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -135,7 +136,7 @@ export function ReconPage() {
                   </p>
                   <p>
                     <strong className="font-medium text-foreground">Passive</strong> — theHarvester,
-                    Tavily, EDGAR, OSINTMap, and metadata extraction query public data or analyst-supplied files.
+                    Tavily, EDGAR, OSINTMap, metadata extraction, and steganography analysis query public data or analyst-supplied files.
                   </p>
                   <p>
                     <strong className="font-medium text-foreground">Analyst id</strong> — matches
@@ -171,6 +172,7 @@ export function ReconPage() {
             <TavilySearchCard />
             <TavilyExtractCard />
             <MetadataCard />
+            <StegoCard />
 
             <section className="mt-10 space-y-4" aria-labelledby="local-build-heading">
               <h2 id="local-build-heading" className="text-lg font-semibold tracking-tight text-foreground">
