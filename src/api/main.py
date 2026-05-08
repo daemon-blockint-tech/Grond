@@ -47,6 +47,7 @@ from src.tools.tavily_tool import (
     tavily_extract_endpoint,
     tavily_search_endpoint,
 )
+from src.tools.stego_tool import StegoOutput, stego_upload_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,40 @@ async def metadata_extract(
         original_filename=name,
         data=data,
         engine=engine,
+    )
+
+
+@app.post("/api/v1/tools/stego", response_model=StegoOutput)
+async def stego_analyze(
+    file: Annotated[UploadFile, File()],
+    target: Annotated[str, Form()],
+    analyst_id: Annotated[str, Form()],
+    session_id: Annotated[str, Form()],
+    engine: Annotated[str, Form()] = "auto",
+    password: Annotated[str, Form()] = "",
+) -> StegoOutput:
+    """
+    Steganography analysis via **stegoVeritas** (comprehensive) and/or **LSB fallback** (Pillow).
+
+    Use optional ``engine`` form field: ``stegoveritas``, ``lsb``, or ``auto``
+    (default from env ``STEGO_ENGINE``).
+
+    Passive: analyst must only upload material they are authorized to analyze.
+    """
+    audit = AuditLogger(analyst_id=analyst_id, session_id=session_id)
+    name = file.filename or "upload"
+    data = await file.read()
+    if not data:
+        return StegoOutput(evidence=[], error="Empty upload")
+    return await stego_upload_endpoint(
+        audit=audit,
+        target=target,
+        analyst_id=analyst_id,
+        session_id=session_id,
+        original_filename=name,
+        data=data,
+        engine=engine,
+        password=password,
     )
 
 

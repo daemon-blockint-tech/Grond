@@ -134,6 +134,17 @@ class Settings(BaseSettings):
             "Metadata CLI: exiftool (broad), exiv2 (images), auto = exiv2 then exiftool fallback"
         ),
     )
+    stegoveritas_bin: str = Field(
+        default="stegoveritas",
+        description="Path to stegoVeritas CLI — https://github.com/bannsec/stegoVeritas. Set STEGOVERITAS_BIN to override (e.g. /opt/grond/.venv/bin/stegoveritas)",
+    )
+    stego_timeout_seconds: int = Field(300, ge=30, le=1800)
+    stego_max_upload_bytes: int = Field(52_428_800, ge=1024, description="Max stego upload size ~50MB")
+    stego_engine: str = Field(
+        default="auto",
+        pattern="^(stegoveritas|lsb|auto)$",
+        description="Stego engine: stegoveritas (comprehensive), lsb (pure-Python fallback), auto",
+    )
     # Confidence formula weights
     # Confidence = (w_s · source_reliability)
     #            + (w_c · cross_source_agreement)
@@ -172,6 +183,8 @@ class Settings(BaseSettings):
     confidence_weight_edgar: float = Field(0.88, ge=0.0, le=1.0)
     confidence_weight_exiftool: float = Field(0.72, ge=0.0, le=1.0)
     confidence_weight_exiv2: float = Field(0.72, ge=0.0, le=1.0)
+    confidence_weight_stegoveritas: float = Field(0.78, ge=0.0, le=1.0)
+    confidence_weight_stego_lsb: float = Field(0.55, ge=0.0, le=1.0)
     confidence_weight_manual: float = Field(1.00, ge=0.0, le=1.0)
 
     # Temporal decay λ — higher = findings go stale faster
@@ -232,6 +245,8 @@ class Settings(BaseSettings):
             "edgar": self.confidence_weight_edgar,
             "exiftool": self.confidence_weight_exiftool,
             "exiv2": self.confidence_weight_exiv2,
+            "stegoveritas": self.confidence_weight_stegoveritas,
+            "stego_lsb": self.confidence_weight_stego_lsb,
             "manual": self.confidence_weight_manual,
         }
         return weights.get(source, 0.5)

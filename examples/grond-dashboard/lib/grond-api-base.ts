@@ -74,3 +74,32 @@ export function formatApiDetail(data: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+/** FastAPI may return `detail` as a string or structured object (e.g. 403 active-scan HITL). */
+export function formatScanApiError(data: unknown, fallback: string): string {
+  if (typeof data !== "object" || data === null || !("detail" in data)) {
+    return fallback;
+  }
+  const detail = (data as { detail: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (typeof detail === "object" && detail !== null) {
+    const o = detail as {
+      message?: unknown;
+      hint?: unknown;
+      actions?: unknown;
+    };
+    const parts: string[] = [];
+    if (typeof o.message === "string" && o.message) parts.push(o.message);
+    if (typeof o.hint === "string" && o.hint) parts.push(o.hint);
+    if (Array.isArray(o.actions)) {
+      const lines = o.actions.filter((a): a is string => typeof a === "string");
+      if (lines.length) parts.push(lines.map((l) => `• ${l}`).join("\n"));
+    }
+    if (parts.length) return parts.join("\n\n");
+  }
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return fallback;
+  }
+}
