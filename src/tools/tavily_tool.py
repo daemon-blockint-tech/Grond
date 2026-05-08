@@ -347,6 +347,39 @@ class TavilyExtractAdapter(ToolAdapter[TavilyExtractInput]):
         self._api_key = api_key or settings.tavily_api_key
         self._last_extract_response: dict[str, Any] | None = None
 
+    @staticmethod
+    def _title_from_raw(raw: str) -> str:
+        if not raw or not raw.strip():
+            return "Extracted web content"
+        first = raw.strip().split("\n", 1)[0].strip()
+        if first.startswith("#"):
+            return first.lstrip("#").strip()[:400]
+        return first[:400]
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        try:
+            from urllib.parse import urlparse
+            return urlparse(url).netloc
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _infer_claim_type(url: str, title: str, default: ClaimType) -> ClaimType:
+        url_l = url.lower()
+        title_l = title.lower()
+        if "linkedin.com" in url_l:
+            return ClaimType.SOCIAL_PROFILE
+        if "github.com" in url_l:
+            return ClaimType.TECH_STACK
+        if any(k in title_l for k in ("breach", "leak", "exposure", "credential")):
+            return ClaimType.CREDENTIAL_EXPOSURE
+        if any(k in title_l for k in ("stack", "technology", "infra", "cloud")):
+            return ClaimType.TECH_STACK
+        if any(k in title_l for k in ("ceo", "cto", "founder", "executive", "team")):
+            return ClaimType.COMPANY_INFO
+        return default
+
     async def _execute(self, input: TavilyExtractInput) -> list[Evidence]:
         try:
             from tavily import TavilyClient  # type: ignore[import]

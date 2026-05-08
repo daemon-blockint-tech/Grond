@@ -76,20 +76,13 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
-# Browser clients (e.g. Next.js dev on :3000) need CORS on POST /api/v1/scan.
-_cors_raw = os.environ.get(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000",
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
-if _cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
 
 @app.get("/")
