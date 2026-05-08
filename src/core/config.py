@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     )
     stegoveritas_bin: str = Field(
         default="stegoveritas",
-        description="Path to stegoVeritas CLI — https://github.com/bannsec/stegoVeritas",
+        description="Path to stegoVeritas CLI — https://github.com/bannsec/stegoVeritas. Set STEGOVERITAS_BIN to override (e.g. /opt/grond/.venv/bin/stegoveritas)",
     )
     stego_timeout_seconds: int = Field(300, ge=30, le=1800)
     stego_max_upload_bytes: int = Field(52_428_800, ge=1024, description="Max stego upload size ~50MB")
