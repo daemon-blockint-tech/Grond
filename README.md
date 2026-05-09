@@ -28,19 +28,40 @@ Passive collection respects provider terms and rate limits. **Active probing** (
 
 ## Table of contents
 
+- [Who this is for](#who-this-is-for)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Repository layout](#repository-layout)
+- [Maturity overview](#maturity-overview)
+- [Personas & deployment profiles](#personas--deployment-profiles)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [TypeScript orchestration & queue](#typescript-orchestration--queue)
 - [Example applications](#example-applications)
 - [Active scans & authorization](#active-scans--authorization)
+- [Observability & production](#observability--production)
 - [Development & testing](#development--testing)
 - [Documentation & agent guidance](#documentation--agent-guidance)
 - [Security & ethics](#security--ethics)
 - [License](#license)
+
+## Who this is for
+
+Grond is designed for teams that need **evidence-first OSINT** with clear guardrails, not just another LLM demo.
+
+**Typical personas:**
+
+- **Threat intel / SOC teams** — Need to collect, corroborate, and report on infrastructure (domains, IPs, orgs) with audit trails, explicit authorization boundaries, and repeatable playbooks.
+- **Red teams / offensive security (with explicit authorization)** — Want to combine passive OSINT (Shodan, web search) with carefully constrained active recon (Nmap, etc.) behind human-in-the-loop and server-side authorization.
+- **Investigative analysts & research units** — Need structured, citable reports built from public data, with a clear separation between raw evidence, enrichment, and narrative.
+- **Developer teams integrating OSINT into products** — Want a FastAPI surface and TypeScript orchestration layer they can extend with custom tools, storage backends, or bespoke UIs.
+
+**Non-goals:**
+
+- General-purpose chat assistant.
+- Unconstrained autonomous scanning or exploitation.
+- "Black box" intelligence with no provenance or auditability.
 
 ## Features
 
@@ -104,6 +125,75 @@ flowchart LR
 | `.cursor/rules/` | Project and security guardrails for AI-assisted development |
 | `docs/` | Operational notes (authorization, incident response) |
 | `recon/` | Optional **local** build scripts for Nmap/Ncrack/Npcap upstream trees (sources are gitignored; see `recon/README.md`) |
+
+## Maturity overview
+
+Grond ships with a detailed [MATURITY_REPORT.md](MATURITY_REPORT.md) that tracks how production-ready different components are (overall score **2.67 / 4.0 — Moderate**).
+
+| Area | Status | Notes |
+|------|--------|-------|
+| FastAPI core (`src/api/`) | **Stable** | Primary integration surface; all tool endpoints wired. |
+| Pipeline (`src/pipeline/`) | **Stable / Beta** | Core collect→enrich→verify→report stages stable; new flows in Beta. |
+| OSINT tools (`src/tools/`) | **Mixed** | Shodan, Tavily, stego hardened; Twitter, harvester, metadata experimental. |
+| TS orchestration (`orchestration/`) | **Beta** | Interfaces may change as agents evolve; treat API contract as stable. |
+| Analyst dashboard (`examples/grond-dashboard/`) | **Beta** | Good for demos; UI routes may move. |
+
+If building on Grond for production: start with the **FastAPI surface + stable tools**; treat Beta/Experimental components as opt-in.
+
+## Personas & deployment profiles
+
+### Analyst desktop (single-node lab)
+
+For an individual analyst or small team exploring Grond:
+
+- **Goal:** FastAPI + optional Next.js dashboard on a single machine.
+- **Skip for now:** Neo4j, Qdrant, BullMQ workers, S3.
+- Set `DATABASE_URL`, `SHODAN_API_KEY`, `TAVILY_API_KEY`, `SECRET_KEY`, and `CORS_ORIGINS` in `.env`. Leave graph/embedding vars commented out.
+
+```bash
+git clone https://github.com/daemon-blockint-tech/Grond.git
+cd Grond
+uv sync --extra dev
+cp .env.example .env   # fill SHODAN_API_KEY, TAVILY_API_KEY, DATABASE_URL, SECRET_KEY
+uv run uvicorn src.api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env
+```
+
+### Backend-focused development
+
+For Python developers extending tools, models, or the pipeline:
+
+- Work in `src/api/`, `src/tools/`, `src/pipeline/`, `src/models/`, `src/core/`.
+- Redis, Neo4j, and the TypeScript orchestration layer are **not required** to start.
+- Add a tool in `src/tools/`, wire it into the API, then `uv run pytest` + `uv run ruff check .` before opening a PR.
+
+### Agent / orchestration development
+
+For TypeScript developers building agents and queues:
+
+- Run the Python API locally, then in a separate shell:
+
+```bash
+cd orchestration
+npm ci
+# Configure GROND_API_URL, Redis, and LLM keys in your env
+npm run dev
+```
+
+- New agents must use **pino** for logging, declare explicit timeouts and retry behavior, and treat the FastAPI surface as a versioned contract (see `orchestration/` README).
+
+### Full-stack demo (API + dashboard)
+
+For showing Grond to stakeholders end-to-end:
+
+```bash
+cd examples/grond-dashboard
+cp .env.example .env.local
+# Set NEXT_PUBLIC_GROND_API_URL=http://127.0.0.1:8000 (or your deployed API URL)
+npm ci
+npm run dev
+```
+
+This gives an **analyst console** (Intel / Recon / Datasheet tabs) without needing the TypeScript orchestration layer to be fully wired in. Ensure `CORS_ORIGINS` on the API side includes your dashboard origin.
 
 ## Requirements
 
@@ -183,11 +273,19 @@ npm ci
 npm run dev
 ```
 
-Ensure `CORS_ORIGINS` on the API includes your dev origin (e.g. `http://localhost:3000`). See [`examples/grond-dashboard/README.md`](examples/grond-dashboard/README.md) for routes (Intel, Recon, Datasheet) and build notes.
+Ensure `CORS_ORIGINS` on the API includes your dev origin (e.g. `http://localhost:3000`). See [`examples/grond-dashboard/README.md`](examples/grond-dashboard/README.md) for build notes.
+
+**Dashboard tabs:**
+
+| Tab | What it does |
+|-----|-------------|
+| **Intel** | Agentic OSINT chat — send a target or question, receive an AI-orchestrated evidence thread with source attribution and confidence scores. |
+| **Recon** | Structured tool cards — run Shodan, Tavily, Twitter, theHarvester, metadata extraction, and steganography analysis against individual targets. |
+| **Datasheet** | Company/entity enrichment — bulk enrich a list of entities (e.g. company names) against a custom prompt, with results as readable bullets, source chips, and CSV export. |
 
 ### Company research UI
 
-Additional example under `examples/company-research-ui/` — follow that directory’s README for Tavily-oriented flows.
+Additional example under `examples/company-research-ui/` — follow that directory's README for Tavily-oriented flows.
 
 ## Active scans & authorization
 
@@ -197,6 +295,35 @@ Additional example under `examples/company-research-ui/` — follow that directo
 - **Human-in-the-loop** and environment gates for development (e.g. `GROND_DEV_BYPASS_NMAP_HITL` only where appropriate)
 
 For local experimentation, set `ENVIRONMENT=development`, configure authorized targets to match your lab scope, and never point active scans at systems you do not own or lack permission to test.
+
+## Observability & production
+
+Grond emits **OpenTelemetry**-compatible spans and **structlog** (Python) / **pino** (TypeScript) structured logs.
+
+**Recommended minimal production setup:**
+
+1. Run an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) sidecar and set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`.
+2. Export traces to Jaeger, Grafana Tempo, or any OTLP-compatible backend.
+3. Use Prometheus + Grafana for service metrics (latency, error rate, queue depth via BullMQ metrics).
+4. Set `SENTRY_DSN` for error capture (optional but recommended in staging/prod).
+
+**Degradation paths** — Grond is designed to degrade gracefully:
+
+| Service down | Impact |
+|---|---|
+| Neo4j not configured | Graph indexing skipped; pipeline continues, no entity graph written. |
+| Qdrant not configured | Semantic search disabled; pgvector used if `EMBEDDING_BACKEND=pgvector`. |
+| Redis unavailable | BullMQ workers cannot start; direct FastAPI calls still work. |
+| S3 not configured | Artifact storage skipped; evidence persisted to PostgreSQL only. |
+
+**API contract (Python ↔ TypeScript):** All inter-layer calls use the FastAPI surface. Key contracts:
+
+- `POST /api/v1/scan` — primary agentic scan entry point; accepts `{target, analyst_id, session_id}`.
+- `POST /api/v1/tools/{tool}` — individual tool endpoints; input schemas defined in `src/tools/`.
+- `POST /api/v1/report` — report generation from collected evidence.
+- `GET /api/v1/health` — returns `{"status": "ok"}`.
+
+TypeScript orchestration should pass the `traceparent` header (W3C Trace Context) so OTel spans are linked across the boundary.
 
 ## Development & testing
 
