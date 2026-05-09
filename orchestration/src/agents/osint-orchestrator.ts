@@ -20,6 +20,7 @@ import { logger } from "../observability/logger.js";
 import {
   runShodanQuery,
   runTavilyQuery,
+  runTavilyExtract,
   runNmapScan,
   runTwitterSearch,
   runHarvesterQuery,
@@ -31,6 +32,7 @@ import {
   NmapScanInput,
   TwitterSearchInput,
   TavilyQueryInput,
+  TavilyExtractInput,
   HarvesterQueryInput,
   OsintmapQueryInput,
   EdgarTextSearchInput,
@@ -319,6 +321,37 @@ const TOOLS: Anthropic.Tool[] = [
           type: "string",
           enum: ["exiftool", "exiv2", "auto"],
           description: "Metadata backend; auto uses server METADATA_ENGINE / fallback chain",
+        },
+      },
+    },
+  },
+  {
+    name: "tavily_extract",
+    description:
+      "Extract full-page content (markdown) from specific URLs via Tavily Extract. " +
+      "Use AFTER tavily_search to pull the complete text of important pages: " +
+      "LinkedIn profiles, SEC filings, Scribd/DocumentCloud documents, court records, " +
+      "news articles with key facts, and any URL where the snippet is insufficient. " +
+      "Batch up to 20 URLs per call. Use focus_query to rank chunks by relevance.",
+    input_schema: {
+      type: "object" as const,
+      required: ["target", "urls", "session_id"],
+      properties: {
+        target: { type: "string", description: "Investigation / case label" },
+        urls: {
+          type: "array",
+          items: { type: "string" },
+          description: "URLs to extract (max 20 per call)",
+        },
+        session_id: { type: "string" },
+        focus_query: {
+          type: "string",
+          description: "Reranks extracted chunks by relevance to this query",
+        },
+        extract_depth: {
+          type: "string",
+          enum: ["basic", "advanced"],
+          default: "advanced",
         },
       },
     },
@@ -634,6 +667,23 @@ async function dispatchTool(
       return runMetadataAnalyze(parsed);
     }
 
+    case "tavily_extract": {
+      const urls = Array.isArray(input["urls"])
+        ? (input["urls"] as string[]).filter((u) => typeof u === "string")
+        : [];
+      if (urls.length === 0) throw new Error("tavily_extract: urls array is empty");
+      const parsed = TavilyExtractInput.parse({
+        target: String(input["target"]),
+        urls,
+        analyst_id,
+        session_id,
+        query: input["focus_query"] !== undefined ? String(input["focus_query"]) : `extract: ${String(input["target"])}`,
+        focus_query: input["focus_query"] !== undefined ? String(input["focus_query"]) : undefined,
+        extract_depth: (input["extract_depth"] as "basic" | "advanced") ?? "advanced",
+      });
+      return runTavilyExtract(parsed);
+    }
+
     case "generate_report":
       return generateReport({
         session_id,
@@ -725,6 +775,7 @@ For each C-level / founder / key person identified:
 ## Tool Calling Rules
 - shodan_search: precise filter expressions (hostname:${req.target} OR ip:${req.target})
 - tavily_search: search_depth=advanced, max_results=10; issue 8–15 focused queries across ALL categories
+- tavily_extract: after tavily_search, call this on the most important URLs (LinkedIn profiles, SEC filings, Scribd docs, court records, news articles) — batch up to 20 URLs per call with focus_query set to the investigation goal
 - theharvester_search: passive only (duckduckgo,crtsh) unless active scan authorized
 - edgar_text_search: combine entity + keywords + single_forms; corroborate with tavily_search
 - osintmap_lookup: vetted public country/region portals; corroborate links
