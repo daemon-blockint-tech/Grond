@@ -277,13 +277,15 @@ function SheetRow({
             <span className="text-[0.75rem] text-red-500">{row.error}</span>
           )}
           {row.status === "done" && row.resultItems.length > 0 && (
-            <div className="space-y-0.5 py-0.5">
-              {row.resultItems.map((item, i) => (
-                <div key={i} className="flex gap-1.5 text-[0.76rem] leading-[1.55] text-foreground/80">
-                  <span className="mt-[0.5em] size-1 shrink-0 rounded-full bg-foreground/20" aria-hidden />
-                  <span>{item}</span>
-                </div>
-              ))}
+            <div className="scrollbar-thin max-h-[7rem] overflow-y-auto">
+              <div className="space-y-0.5 py-0.5 pr-1">
+                {row.resultItems.map((item, i) => (
+                  <div key={i} className="flex gap-1.5 text-[0.76rem] leading-[1.55] text-foreground/80">
+                    <span className="mt-[0.5em] size-1 shrink-0 rounded-full bg-foreground/20" aria-hidden />
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {row.status === "done" && row.resultItems.length === 0 && (
