@@ -352,9 +352,9 @@ function SheetRow({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const SEED_ROWS: [string, string][] = [
-  ["Tesla",       "Latest product launches and delivery numbers"],
-  ["Stripe",      "Recent funding round or valuation changes"],
-  ["Anthropic",   "Key partnerships or enterprise customer news"],
+  ["", ""],
+  ["", ""],
+  ["", ""],
 ];
 
 export function DatasheetPage() {
@@ -539,7 +539,6 @@ export function DatasheetPage() {
               </>
             ) : (
               <>
-                <Zap className="size-3.5 stroke-[1.5]" />
                 Enrich all{enrichableCount > 0 ? ` (${enrichableCount})` : ""}
               </>
             )}
