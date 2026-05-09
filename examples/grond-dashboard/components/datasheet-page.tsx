@@ -2,7 +2,6 @@
 
 import {
   CheckCircle2,
-  ChevronDown,
   Download,
   ExternalLink,
   Loader2,
@@ -15,13 +14,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AnalystSidebarNav } from "@/components/analyst-sidebar-nav";
 import { GrondLogo } from "@/components/grond-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Sheet,
   SheetContent,
@@ -47,8 +45,8 @@ type EnrichRow = {
   entity: string;
   prompt: string;
   status: "idle" | "loading" | "done" | "error";
-  result: string;           // cleaned prose summary
-  resultItems: string[];    // individual bullet items from snippets
+  result: string;
+  resultItems: string[];
   sources: Source[];
   error: string;
 };
@@ -89,11 +87,9 @@ function toCsv(rows: EnrichRow[]): string {
   return [header, ...lines].join("\n");
 }
 
-// Parse Tavily snippets into readable bullet items
 function parseSnippets(snippets: string[]): { items: string[]; summary: string } {
   const items: string[] = [];
   for (const raw of snippets) {
-    // Split on markdown ## headings or double newlines, keep non-empty lines
     const parts = raw
       .split(/\n{2,}|(?=## )/)
       .map((s) => s.replace(/^#+\s+/, "").trim())
@@ -105,9 +101,51 @@ function parseSnippets(snippets: string[]): { items: string[]; summary: string }
   return { items: items.slice(0, 6), summary };
 }
 
-// ─── Row Card ────────────────────────────────────────────────────────────────
+// ─── Column widths (px) ───────────────────────────────────────────────────────
 
-function RowCard({
+const COL_NUM    = 40;
+const COL_ENTITY = 180;
+const COL_PROMPT = 220;
+const COL_STATUS = 90;
+
+// ─── Inline editable cell ────────────────────────────────────────────────────
+
+function EditableCell({
+  value,
+  onChange,
+  placeholder,
+  disabled,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      disabled={disabled}
+      spellCheck={false}
+      autoComplete="off"
+      className={cn(
+        "w-full bg-transparent px-2.5 py-0 text-[0.8rem] text-foreground outline-none",
+        "placeholder:text-muted-foreground/40",
+        "disabled:opacity-50 disabled:cursor-not-allowed",
+        "focus:bg-primary/[0.04]",
+        className,
+      )}
+    />
+  );
+}
+
+// ─── Sheet Row ───────────────────────────────────────────────────────────────
+
+function SheetRow({
   row,
   index,
   totalRows,
@@ -126,238 +164,218 @@ function RowCard({
   onDelete: (id: string) => void;
   onReenrich: (row: EnrichRow) => void;
 }) {
-  const entityId = useId();
-  const promptId = useId();
-  const canEnrich = row.entity.trim() && row.prompt.trim();
-  const isActive = row.status === "loading";
+  const isLoading = row.status === "loading";
+  const canEnrich  = row.entity.trim() && row.prompt.trim();
+
+  const rowBg = {
+    idle:    "",
+    loading: "bg-amber-500/[0.04]",
+    done:    "bg-emerald-500/[0.03]",
+    error:   "bg-red-500/[0.04]",
+  }[row.status];
 
   return (
-    <div
-      className={cn(
-        "group relative rounded-2xl border transition-all duration-300 ease-out-expo",
-        "animate-fade-in-up",
-        row.status === "idle" &&
-          "border-white/[0.06] bg-white/[0.02] dark:border-white/[0.06] dark:bg-white/[0.02]",
-        row.status === "loading" &&
-          "border-amber-300/40 bg-amber-50/20 dark:border-amber-500/20 dark:bg-amber-950/10",
-        row.status === "done" &&
-          "border-white/[0.08] bg-white dark:border-white/[0.08] dark:bg-white/[0.025]",
-        row.status === "error" &&
-          "border-red-300/40 bg-red-50/20 dark:border-red-500/20 dark:bg-red-950/10",
-      )}
-    >
-      {/* Loading shimmer bar */}
-      {isActive && (
-        <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden rounded-t-2xl">
-          <div className="shimmer-bg h-full w-full" />
-        </div>
-      )}
+    <>
+      {/* ── main data row ── */}
+      <tr
+        className={cn(
+          "group border-b border-border/50 transition-colors",
+          rowBg,
+          "hover:bg-muted/30",
+        )}
+      >
+        {/* # */}
+        <td
+          style={{ width: COL_NUM, minWidth: COL_NUM }}
+          className="border-r border-border/50 text-center text-[0.68rem] tabular-nums text-muted-foreground/50 select-none"
+        >
+          {index + 1}
+        </td>
 
-      {/* Card header — row number + status + actions */}
-      <div className="flex items-center justify-between gap-3 border-b border-white/[0.05] px-4 py-2.5">
-        <div className="flex items-center gap-2.5">
-          <span className="flex size-5 shrink-0 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] text-[0.6rem] font-semibold tabular-nums text-muted-foreground">
-            {index + 1}
-          </span>
+        {/* Entity */}
+        <td
+          style={{ width: COL_ENTITY, minWidth: COL_ENTITY }}
+          className="border-r border-border/50 py-0"
+        >
+          <EditableCell
+            value={row.entity}
+            onChange={(v) => onUpdate(row.id, { entity: v })}
+            placeholder="Entity…"
+            disabled={isLoading}
+          />
+        </td>
+
+        {/* Prompt */}
+        <td
+          style={{ width: COL_PROMPT, minWidth: COL_PROMPT }}
+          className="border-r border-border/50 py-0"
+        >
+          <EditableCell
+            value={row.prompt}
+            onChange={(v) => onUpdate(row.id, { prompt: v })}
+            placeholder="What to find out…"
+            disabled={isLoading}
+          />
+        </td>
+
+        {/* Status */}
+        <td
+          style={{ width: COL_STATUS, minWidth: COL_STATUS }}
+          className="border-r border-border/50 px-2 text-center"
+        >
+          {row.status === "idle" && (
+            <span className="text-[0.65rem] text-muted-foreground/40">—</span>
+          )}
           {row.status === "loading" && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300/40 bg-amber-50 px-2 py-0.5 text-[0.65rem] font-medium text-amber-700 dark:border-amber-500/20 dark:bg-amber-950/40 dark:text-amber-300 animate-fade-in">
-              <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
-              Enriching
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-50 px-1.5 py-0.5 text-[0.6rem] font-medium text-amber-700 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-300">
+              <Loader2 className="size-2.5 animate-spin stroke-[2]" aria-hidden />
+              Loading
             </span>
           )}
           {row.status === "done" && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300/40 bg-emerald-50 px-2 py-0.5 text-[0.65rem] font-medium text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-950/40 dark:text-emerald-300 animate-fade-in">
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-50 px-1.5 py-0.5 text-[0.6rem] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-300">
               <CheckCircle2 className="size-2.5 stroke-[2]" aria-hidden />
-              Enriched
+              Done
             </span>
           )}
           {row.status === "error" && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-red-300/40 bg-red-50 px-2 py-0.5 text-[0.65rem] font-medium text-red-700 dark:border-red-500/20 dark:bg-red-950/40 dark:text-red-300 animate-fade-in">
+            <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-50 px-1.5 py-0.5 text-[0.6rem] font-medium text-red-700 dark:border-red-500/30 dark:bg-red-950/40 dark:text-red-300">
               Error
             </span>
           )}
-        </div>
+        </td>
 
-        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          {row.status === "done" && (
-            <button
-              type="button"
-              onClick={() => onReenrich(row)}
-              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition spring-sm hover:bg-white/[0.06] hover:text-foreground"
-              aria-label={`Re-enrich row ${index + 1}`}
-              title="Re-enrich"
-            >
-              <RefreshCw className="size-3.5 stroke-[1.5]" aria-hidden />
-            </button>
+        {/* Result — flex cell */}
+        <td className="min-w-0 border-r border-border/50 px-2.5 py-1.5">
+          {row.status === "idle" && (
+            <span className="text-[0.75rem] text-muted-foreground/30">
+              {canEnrich ? "Ready to enrich" : "Fill entity & prompt"}
+            </span>
           )}
-          {row.status === "idle" && canEnrich && !enrichingAll && (
-            <button
-              type="button"
-              onClick={() => onEnrich(row)}
-              className="flex h-7 items-center gap-1 rounded-lg px-2 text-[0.65rem] font-medium text-muted-foreground transition spring-sm hover:bg-white/[0.06] hover:text-foreground"
-              aria-label={`Enrich row ${index + 1}`}
-            >
-              <Zap className="size-3 stroke-[1.5]" aria-hidden />
-              Enrich
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => onDelete(row.id)}
-            disabled={totalRows <= 1 || isActive}
-            className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition spring-sm hover:bg-red-50 hover:text-red-600 disabled:pointer-events-none disabled:opacity-30 dark:hover:bg-red-950/30 dark:hover:text-red-400"
-            aria-label={`Remove row ${index + 1}`}
-            title="Remove"
-          >
-            <Trash2 className="size-3.5 stroke-[1.5]" aria-hidden />
-          </button>
-        </div>
-      </div>
-
-      {/* Input area — entity + prompt side by side */}
-      <div className="grid gap-3 p-4 sm:grid-cols-[1fr_2fr]">
-        <div className="space-y-1.5">
-          <label
-            htmlFor={entityId}
-            className="block text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
-          >
-            Entity
-          </label>
-          <Input
-            id={entityId}
-            value={row.entity}
-            onChange={(e) => onUpdate(row.id, { entity: e.target.value })}
-            placeholder="e.g. Tesla, Stripe, OpenAI"
-            className="h-9 rounded-xl border-white/[0.08] bg-background/60 text-sm dark:bg-zinc-950/60"
-            autoComplete="off"
-            disabled={isActive}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <label
-            htmlFor={promptId}
-            className="block text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
-          >
-            What to enrich
-          </label>
-          <Input
-            id={promptId}
-            value={row.prompt}
-            onChange={(e) => onUpdate(row.id, { prompt: e.target.value })}
-            placeholder="e.g. Latest funding round and valuation"
-            className="h-9 rounded-xl border-white/[0.08] bg-background/60 text-sm dark:bg-zinc-950/60"
-            autoComplete="off"
-            disabled={isActive}
-          />
-        </div>
-      </div>
-
-      {/* Result area */}
-      {(row.status !== "idle" || row.result) && (
-        <div className="border-t border-white/[0.05] px-4 pb-4 pt-3">
           {row.status === "loading" && (
-            <div className="flex items-center gap-2.5 py-3 text-xs text-muted-foreground animate-fade-in">
-              <Loader2 className="size-4 shrink-0 animate-spin stroke-[1.5] text-amber-500" />
-              <span>Searching the web for <strong className="text-foreground">{row.entity}</strong>&thinsp;—&thinsp;{row.prompt.length > 60 ? row.prompt.slice(0, 60) + "…" : row.prompt}</span>
-            </div>
+            <span className="animate-pulse text-[0.75rem] text-muted-foreground/50">
+              Searching the web for <strong className="text-foreground">{row.entity}</strong>…
+            </span>
           )}
-
           {row.status === "error" && (
-            <p className="py-2 text-xs leading-[1.7] text-red-600 dark:text-red-400">
-              {row.error}
-            </p>
+            <span className="text-[0.75rem] text-red-500">{row.error}</span>
           )}
-
           {row.status === "done" && row.resultItems.length > 0 && (
-            <div className="animate-fade-in-up space-y-3">
-              {/* Bullet findings */}
-              <ul className="space-y-2">
-                {row.resultItems.map((item, i) => (
-                  <li
-                    key={i}
-                    className={cn(
-                      "flex gap-2.5 text-[0.8rem] leading-[1.65] text-foreground/80",
-                      `stagger-${Math.min(i + 1, 6) as 1 | 2 | 3 | 4 | 5 | 6}`,
-                      "animate-fade-in-up",
-                    )}
-                  >
-                    <span className="mt-[0.45em] size-1.5 shrink-0 rounded-full bg-foreground/20" aria-hidden />
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-
-              {/* Source chips */}
-              {row.sources.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  <span className="self-center text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground/60 mr-0.5">
-                    Sources
-                  </span>
-                  {row.sources.map((src, si) => (
-                    <a
-                      key={si}
-                      href={src.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={src.title || src.url}
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-0.5",
-                        "text-[0.65rem] font-medium text-muted-foreground",
-                        "transition spring-sm hover:border-white/[0.14] hover:bg-white/[0.07] hover:text-foreground",
-                        `stagger-${Math.min(si + 1, 6) as 1 | 2 | 3 | 4 | 5 | 6}`,
-                        "animate-fade-in",
-                      )}
-                    >
-                      <span>{extractDomain(src.url)}</span>
-                      <ExternalLink className="size-2.5 shrink-0 stroke-[1.5] opacity-50" aria-hidden />
-                    </a>
-                  ))}
+            <div className="space-y-0.5 py-0.5">
+              {row.resultItems.map((item, i) => (
+                <div
+                  key={i}
+                  className="flex gap-1.5 text-[0.76rem] leading-[1.55] text-foreground/80"
+                >
+                  <span className="mt-[0.5em] size-1 shrink-0 rounded-full bg-foreground/20" aria-hidden />
+                  <span>{item}</span>
                 </div>
-              )}
+              ))}
             </div>
           )}
-
           {row.status === "done" && row.resultItems.length === 0 && (
-            <p className="py-2 text-xs text-muted-foreground">
-              No relevant results found for this query.
-            </p>
+            <span className="text-[0.75rem] text-muted-foreground/50">No results found.</span>
           )}
-        </div>
+        </td>
+
+        {/* Actions */}
+        <td
+          style={{ width: 88, minWidth: 88 }}
+          className="px-1 text-center"
+        >
+          <div className="flex items-center justify-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            {row.status === "idle" && canEnrich && !enrichingAll && (
+              <button
+                type="button"
+                onClick={() => onEnrich(row)}
+                title="Enrich this row"
+                className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
+              >
+                <Zap className="size-3 stroke-[1.5]" aria-hidden />
+              </button>
+            )}
+            {row.status === "done" && (
+              <button
+                type="button"
+                onClick={() => onReenrich(row)}
+                title="Re-enrich"
+                className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <RefreshCw className="size-3 stroke-[1.5]" aria-hidden />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onDelete(row.id)}
+              disabled={totalRows <= 1 || isLoading}
+              title="Delete row"
+              className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-red-50 hover:text-red-500 disabled:pointer-events-none disabled:opacity-20 dark:hover:bg-red-950/30 dark:hover:text-red-400"
+            >
+              <Trash2 className="size-3 stroke-[1.5]" aria-hidden />
+            </button>
+          </div>
+        </td>
+      </tr>
+
+      {/* ── sources sub-row (only when done + has sources) ── */}
+      {row.status === "done" && row.sources.length > 0 && (
+        <tr className={cn("border-b border-border/40", rowBg)}>
+          {/* span first 4 cols with empty cell */}
+          <td colSpan={4} />
+          {/* sources in result column */}
+          <td className="px-2.5 pb-2 pt-0.5" colSpan={2}>
+            <div className="flex flex-wrap gap-1">
+              <span className="self-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50 mr-0.5">
+                Sources
+              </span>
+              {row.sources.map((src, si) => (
+                <a
+                  key={si}
+                  href={src.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={src.title || src.url}
+                  className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground transition hover:border-border hover:bg-muted hover:text-foreground"
+                >
+                  {extractDomain(src.url)}
+                  <ExternalLink className="size-2 shrink-0 opacity-50" aria-hidden />
+                </a>
+              ))}
+            </div>
+          </td>
+        </tr>
       )}
-    </div>
+    </>
   );
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const SEED_ROWS: [string, string][] = [
-  ["Tesla", "Latest product launches and delivery numbers"],
-  ["Stripe", "Recent funding round or valuation changes"],
-  ["Anthropic", "Key partnerships or enterprise customer news"],
+  ["Tesla",       "Latest product launches and delivery numbers"],
+  ["Stripe",      "Recent funding round or valuation changes"],
+  ["Anthropic",   "Key partnerships or enterprise customer news"],
 ];
 
 export function DatasheetPage() {
-  const router = useRouter();
+  const router   = useRouter();
   const [navOpen, setNavOpen] = useState(false);
-  const [recent, setRecent] = useState<RecentItem[]>([]);
-  const [rows, setRows] = useState<EnrichRow[]>(() =>
+  const [recent, setRecent]   = useState<RecentItem[]>([]);
+  const [rows, setRows]       = useState<EnrichRow[]>(() =>
     SEED_ROWS.map(([e, p]) => newRow(e, p)),
   );
   const [enrichingAll, setEnrichingAll] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Track progress
-  const doneCount = rows.filter((r) => r.status === "done").length;
-  const loadingCount = rows.filter((r) => r.status === "loading").length;
+  const doneCount      = rows.filter((r) => r.status === "done").length;
+  const loadingCount   = rows.filter((r) => r.status === "loading").length;
   const enrichableCount = rows.filter(
     (r) => r.entity.trim() && r.prompt.trim() && r.status !== "done",
   ).length;
-  const hasResults = doneCount > 0;
+  const hasResults  = doneCount > 0;
   const totalFilled = rows.filter((r) => r.entity.trim() && r.prompt.trim()).length;
 
-  useEffect(() => {
-    setRecent(loadRecent());
-  }, []);
+  useEffect(() => { setRecent(loadRecent()); }, []);
 
   const updateRow = useCallback((id: string, patch: Partial<EnrichRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -369,78 +387,48 @@ export function DatasheetPage() {
       const prompt = row.prompt.trim();
       if (!entity || !prompt) return;
 
-      updateRow(row.id, {
-        status: "loading",
-        error: "",
-        result: "",
-        resultItems: [],
-        sources: [],
-      });
+      updateRow(row.id, { status: "loading", error: "", result: "", resultItems: [], sources: [] });
 
       const analyst = ensureAnalystId();
-      const base = getGrondApiBase();
+      const base    = getGrondApiBase();
 
       try {
         const res = await fetch(`${base}/api/v1/tools/tavily`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            target: entity,
-            query: `${entity} ${prompt}`,
-            analyst_id: analyst,
-            session_id: crypto.randomUUID(),
+            target:       entity,
+            query:        `${entity} ${prompt}`,
+            analyst_id:   analyst,
+            session_id:   crypto.randomUUID(),
             search_depth: "advanced",
-            max_results: 5,
+            max_results:  5,
           }),
           signal,
         });
 
         const data: {
-          evidence?: Array<{
-            value?: { title?: string; url?: string; snippet?: string };
-          }>;
+          evidence?: Array<{ value?: { title?: string; url?: string; snippet?: string } }>;
           error?: string;
         } = await res.json();
 
         if (!res.ok) {
-          updateRow(row.id, {
-            status: "error",
-            error: formatApiDetail(data, `Failed (${res.status})`),
-          });
+          updateRow(row.id, { status: "error", error: formatApiDetail(data, `Failed (${res.status})`) });
           return;
         }
 
         const evidence = data.evidence ?? [];
-
         const sources: Source[] = evidence
           .filter((ev) => ev.value?.url)
-          .map((ev) => ({
-            title: ev.value?.title ?? "",
-            url: ev.value?.url ?? "",
-            snippet: ev.value?.snippet ?? "",
-          }));
+          .map((ev) => ({ title: ev.value?.title ?? "", url: ev.value?.url ?? "", snippet: ev.value?.snippet ?? "" }));
 
-        const snippets = evidence
-          .map((ev) => ev.value?.snippet ?? "")
-          .filter(Boolean);
-
+        const snippets = evidence.map((ev) => ev.value?.snippet ?? "").filter(Boolean);
         const { items, summary } = parseSnippets(snippets);
 
-        updateRow(row.id, {
-          status: "done",
-          result: summary,
-          resultItems: items,
-          sources,
-        });
+        updateRow(row.id, { status: "done", result: summary, resultItems: items, sources });
       } catch (e: unknown) {
-        if (signal?.aborted) {
-          updateRow(row.id, { status: "idle" });
-          return;
-        }
-        updateRow(row.id, {
-          status: "error",
-          error: formatGrondReachabilityError(e, base),
-        });
+        if (signal?.aborted) { updateRow(row.id, { status: "idle" }); return; }
+        updateRow(row.id, { status: "error", error: formatGrondReachabilityError(e, base) });
       }
     },
     [updateRow],
@@ -450,17 +438,11 @@ export function DatasheetPage() {
     setEnrichingAll(true);
     const ac = new AbortController();
     abortRef.current = ac;
-
-    // snapshot so we don't re-read state mid-loop
-    const pending = rows.filter(
-      (r) => r.entity.trim() && r.prompt.trim() && r.status !== "done",
-    );
-
+    const pending = rows.filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done");
     for (const row of pending) {
       if (ac.signal.aborted) break;
       await enrichRow(row, ac.signal);
     }
-
     setEnrichingAll(false);
     abortRef.current = null;
   }, [rows, enrichRow]);
@@ -472,14 +454,7 @@ export function DatasheetPage() {
 
   const handleReenrich = useCallback(
     (row: EnrichRow) => {
-      const reset: EnrichRow = {
-        ...row,
-        status: "idle",
-        result: "",
-        resultItems: [],
-        sources: [],
-        error: "",
-      };
+      const reset: EnrichRow = { ...row, status: "idle", result: "", resultItems: [], sources: [], error: "" };
       updateRow(row.id, reset);
       void enrichRow(reset);
     },
@@ -489,10 +464,10 @@ export function DatasheetPage() {
   const downloadCsv = useCallback(() => {
     if (!hasResults) return;
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
     a.href = url;
-    a.download = `grond-enriched-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `grond-datasheet-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }, [rows, hasResults]);
@@ -541,111 +516,134 @@ export function DatasheetPage() {
           <ThemeToggle />
         </header>
 
-        {/* Main */}
-        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-label="Data enrichment">
-          <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
+        {/* Toolbar */}
+        <div className="flex shrink-0 items-center gap-2 border-b border-border bg-background/80 px-4 py-2 backdrop-blur-sm">
+          {/* Page label */}
+          <span className="mr-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">
+            Datasheet
+          </span>
 
-            {/* Page header */}
-            <div className="space-y-2 animate-fade-in-up">
-              <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
-                Data enrichment
-              </p>
-              <h1 className="text-2xl font-semibold tracking-[-0.02em] text-foreground sm:text-[1.75rem]">
-                Enrich your dataset
-              </h1>
-              <p className="max-w-xl text-[0.85rem] leading-[1.7] text-muted-foreground">
-                Add entities and what you want to know — Grond searches the web and fills each row with sourced intelligence.
-              </p>
-            </div>
-
-            {/* Toolbar */}
-            <div className="mt-7 flex flex-wrap items-center gap-2 animate-fade-in-up stagger-1">
-              <Button
-                type="button"
-                onClick={() => void enrichAll()}
-                disabled={enrichableCount === 0 || enrichingAll}
-                className="gap-2 rounded-xl"
-              >
-                {enrichingAll ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin stroke-[1.5]" />
-                    Enriching {loadingCount > 0 ? `row ${doneCount + 1} of ${totalFilled}` : "…"}
-                  </>
-                ) : (
-                  <>
-                    <Zap className="size-4 stroke-[1.5]" />
-                    Enrich all{enrichableCount > 0 ? ` (${enrichableCount})` : ""}
-                  </>
-                )}
-              </Button>
-
-              {enrichingAll && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={cancelEnrich}
-                  className="gap-2 rounded-xl"
-                >
-                  <X className="size-4 stroke-[1.5]" />
-                  Cancel
-                </Button>
-              )}
-
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setRows((r) => [...r, newRow()])}
-                className="gap-2 rounded-xl"
-              >
-                <Plus className="size-4 stroke-[1.5]" />
-                Add row
-              </Button>
-
-              <Button
-                type="button"
-                variant="outline"
-                onClick={downloadCsv}
-                disabled={!hasResults}
-                className="gap-2 rounded-xl"
-              >
-                <Download className="size-4 stroke-[1.5]" />
-                Export CSV
-              </Button>
-
-              {/* Progress indicator */}
-              {totalFilled > 0 && (
-                <span className="ml-auto text-[0.7rem] tabular-nums text-muted-foreground">
-                  {doneCount}/{totalFilled} enriched
-                </span>
-              )}
-            </div>
-
-            {/* Progress bar */}
-            {enrichingAll && totalFilled > 0 && (
-              <div className="mt-3 h-[3px] w-full overflow-hidden rounded-full bg-white/[0.06] animate-slide-down">
-                <div
-                  className="h-full rounded-full bg-primary transition-all duration-700 ease-out-expo"
-                  style={{ width: `${Math.round((doneCount / totalFilled) * 100)}%` }}
-                />
-              </div>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void enrichAll()}
+            disabled={enrichableCount === 0 || enrichingAll}
+            className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+          >
+            {enrichingAll ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin stroke-[1.5]" />
+                {loadingCount > 0
+                  ? `Enriching ${doneCount + 1}/${totalFilled}…`
+                  : "Enriching…"}
+              </>
+            ) : (
+              <>
+                <Zap className="size-3.5 stroke-[1.5]" />
+                Enrich all{enrichableCount > 0 ? ` (${enrichableCount})` : ""}
+              </>
             )}
+          </Button>
 
-            {/* How it works */}
-            <details className="group mt-5 rounded-xl border border-white/[0.06] animate-fade-in-up stagger-2">
-              <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 text-[0.72rem] font-medium text-muted-foreground [&::-webkit-details-marker]:hidden hover:text-foreground transition">
-                <ChevronDown className="size-3.5 shrink-0 stroke-[1.5] transition-transform group-open:rotate-180" aria-hidden />
-                How it works
-              </summary>
-              <div className="border-t border-white/[0.06] px-3.5 pb-3.5 pt-3 text-[0.75rem] leading-[1.75] text-muted-foreground space-y-1.5">
-                <p>Each row sends <strong className="text-foreground">entity + prompt</strong> as a Tavily advanced search query via <code className="rounded bg-muted px-1 py-0.5 text-foreground">POST /api/v1/tools/tavily</code>. Results are extracted into readable bullet points with source citations.</p>
-                <p>Rows are enriched sequentially to respect API rate limits. Use <strong className="text-foreground">Enrich all</strong> to process the full dataset, or click the ⚡ icon on any individual row.</p>
-              </div>
-            </details>
+          {enrichingAll && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={cancelEnrich}
+              className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+            >
+              <X className="size-3.5 stroke-[1.5]" />
+              Cancel
+            </Button>
+          )}
 
-            {/* Row cards */}
-            <div className="mt-6 space-y-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setRows((r) => [...r, newRow()])}
+            className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+          >
+            <Plus className="size-3.5 stroke-[1.5]" />
+            Add row
+          </Button>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={downloadCsv}
+            disabled={!hasResults}
+            className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+          >
+            <Download className="size-3.5 stroke-[1.5]" />
+            Export CSV
+          </Button>
+
+          {totalFilled > 0 && (
+            <span className="ml-auto text-[0.68rem] tabular-nums text-muted-foreground">
+              {doneCount}/{totalFilled} enriched
+            </span>
+          )}
+
+          {/* progress bar */}
+          {enrichingAll && totalFilled > 0 && (
+            <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-700 ease-out"
+                style={{ width: `${Math.round((doneCount / totalFilled) * 100)}%` }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Sheet table */}
+        <main className="min-h-0 flex-1 overflow-auto" aria-label="Datasheet">
+          <table className="w-full border-collapse text-sm" style={{ minWidth: 700 }}>
+            {/* ── Fixed header ── */}
+            <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur-sm">
+              <tr className="border-b border-border">
+                <th
+                  style={{ width: COL_NUM, minWidth: COL_NUM }}
+                  className="border-r border-border/60 py-2 text-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50 select-none"
+                >
+                  #
+                </th>
+                <th
+                  style={{ width: COL_ENTITY, minWidth: COL_ENTITY }}
+                  className="border-r border-border/60 px-2.5 py-2 text-left text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Entity
+                </th>
+                <th
+                  style={{ width: COL_PROMPT, minWidth: COL_PROMPT }}
+                  className="border-r border-border/60 px-2.5 py-2 text-left text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Prompt
+                </th>
+                <th
+                  style={{ width: COL_STATUS, minWidth: COL_STATUS }}
+                  className="border-r border-border/60 px-2.5 py-2 text-center text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Status
+                </th>
+                <th className="border-r border-border/60 px-2.5 py-2 text-left text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Result
+                </th>
+                <th
+                  style={{ width: 88, minWidth: 88 }}
+                  className="px-2 py-2 text-center text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Actions
+                </th>
+              </tr>
+            </thead>
+
+            {/* ── Body ── */}
+            <tbody>
               {rows.map((row, i) => (
-                <RowCard
+                <SheetRow
                   key={row.id}
                   row={row}
                   index={i}
@@ -661,28 +659,37 @@ export function DatasheetPage() {
                   onReenrich={handleReenrich}
                 />
               ))}
-            </div>
 
-            {/* Add row inline CTA */}
-            <button
-              type="button"
-              onClick={() => setRows((r) => [...r, newRow()])}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-white/[0.08] py-3 text-[0.75rem] text-muted-foreground transition spring-sm hover:border-white/[0.16] hover:text-foreground"
-            >
-              <Plus className="size-3.5 stroke-[1.5]" aria-hidden />
-              Add another row
-            </button>
-
-            {/* Footer nav */}
-            <p className="mt-10 text-[0.72rem] text-muted-foreground">
-              <Link href="/" className="font-medium text-foreground underline underline-offset-2">Intel</Link>
-              {" · "}
-              <Link href="/recon" className="font-medium text-foreground underline underline-offset-2">Recon</Link>
-              {" · "}
-              <Link href="/admin" className="font-medium text-foreground underline underline-offset-2">Admin</Link>
-            </p>
-          </div>
+              {/* ── Add row button as a table row ── */}
+              <tr>
+                <td
+                  colSpan={6}
+                  className="border-b border-border/30 px-0"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setRows((r) => [...r, newRow()])}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-[0.73rem] text-muted-foreground/50 transition hover:bg-muted/40 hover:text-muted-foreground"
+                  >
+                    <Plus className="size-3.5 stroke-[1.5]" aria-hidden />
+                    Add row
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </main>
+
+        {/* Footer */}
+        <footer className="shrink-0 border-t border-border/40 px-4 py-2">
+          <p className="text-[0.68rem] text-muted-foreground">
+            <Link href="/" className="font-medium text-foreground underline underline-offset-2">Intel</Link>
+            {" · "}
+            <Link href="/recon" className="font-medium text-foreground underline underline-offset-2">Recon</Link>
+            {" · "}
+            <Link href="/admin" className="font-medium text-foreground underline underline-offset-2">Admin</Link>
+          </p>
+        </footer>
       </div>
     </div>
   );
