@@ -103,7 +103,8 @@ function parseSnippets(snippets: string[]): { items: string[]; summary: string }
 
 // ─── Column widths (px) ───────────────────────────────────────────────────────
 
-const COL_NUM    = 40;
+const COL_CHECK  = 36;
+const COL_NUM    = 32;
 const COL_ENTITY = 180;
 const COL_PROMPT = 220;
 const COL_STATUS = 90;
@@ -115,13 +116,11 @@ function EditableCell({
   onChange,
   placeholder,
   disabled,
-  className,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   disabled?: boolean;
-  className?: string;
 }) {
   return (
     <input
@@ -137,7 +136,6 @@ function EditableCell({
         "placeholder:text-muted-foreground/40",
         "disabled:opacity-50 disabled:cursor-not-allowed",
         "focus:bg-primary/[0.04]",
-        className,
       )}
     />
   );
@@ -149,7 +147,9 @@ function SheetRow({
   row,
   index,
   totalRows,
-  enrichingAll,
+  selected,
+  enriching,
+  onToggleSelect,
   onUpdate,
   onEnrich,
   onDelete,
@@ -158,14 +158,16 @@ function SheetRow({
   row: EnrichRow;
   index: number;
   totalRows: number;
-  enrichingAll: boolean;
+  selected: boolean;
+  enriching: boolean;
+  onToggleSelect: (id: string) => void;
   onUpdate: (id: string, patch: Partial<EnrichRow>) => void;
   onEnrich: (row: EnrichRow) => void;
   onDelete: (id: string) => void;
   onReenrich: (row: EnrichRow) => void;
 }) {
   const isLoading = row.status === "loading";
-  const canEnrich  = row.entity.trim() && row.prompt.trim();
+  const canEnrich = row.entity.trim() && row.prompt.trim();
 
   const rowBg = {
     idle:    "",
@@ -181,13 +183,27 @@ function SheetRow({
         className={cn(
           "group border-b border-border/50 transition-colors",
           rowBg,
-          "hover:bg-muted/30",
+          selected ? "bg-primary/[0.04]" : "hover:bg-muted/30",
         )}
       >
+        {/* Checkbox */}
+        <td
+          style={{ width: COL_CHECK, minWidth: COL_CHECK }}
+          className="border-r border-border/50 text-center"
+        >
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(row.id)}
+            aria-label={`Select row ${index + 1}`}
+            className="size-3.5 cursor-pointer accent-primary"
+          />
+        </td>
+
         {/* # */}
         <td
           style={{ width: COL_NUM, minWidth: COL_NUM }}
-          className="border-r border-border/50 text-center text-[0.68rem] tabular-nums text-muted-foreground/50 select-none"
+          className="border-r border-border/50 text-center text-[0.68rem] tabular-nums text-muted-foreground/40 select-none"
         >
           {index + 1}
         </td>
@@ -245,7 +261,7 @@ function SheetRow({
           )}
         </td>
 
-        {/* Result — flex cell */}
+        {/* Result */}
         <td className="min-w-0 border-r border-border/50 px-2.5 py-1.5">
           {row.status === "idle" && (
             <span className="text-[0.75rem] text-muted-foreground/30">
@@ -263,10 +279,7 @@ function SheetRow({
           {row.status === "done" && row.resultItems.length > 0 && (
             <div className="space-y-0.5 py-0.5">
               {row.resultItems.map((item, i) => (
-                <div
-                  key={i}
-                  className="flex gap-1.5 text-[0.76rem] leading-[1.55] text-foreground/80"
-                >
+                <div key={i} className="flex gap-1.5 text-[0.76rem] leading-[1.55] text-foreground/80">
                   <span className="mt-[0.5em] size-1 shrink-0 rounded-full bg-foreground/20" aria-hidden />
                   <span>{item}</span>
                 </div>
@@ -279,12 +292,9 @@ function SheetRow({
         </td>
 
         {/* Actions */}
-        <td
-          style={{ width: 88, minWidth: 88 }}
-          className="px-1 text-center"
-        >
+        <td style={{ width: 88, minWidth: 88 }} className="px-1 text-center">
           <div className="flex items-center justify-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-            {row.status === "idle" && canEnrich && !enrichingAll && (
+            {row.status === "idle" && canEnrich && !enriching && (
               <button
                 type="button"
                 onClick={() => onEnrich(row)}
@@ -317,15 +327,13 @@ function SheetRow({
         </td>
       </tr>
 
-      {/* ── sources sub-row (only when done + has sources) ── */}
+      {/* ── sources sub-row ── */}
       {row.status === "done" && row.sources.length > 0 && (
         <tr className={cn("border-b border-border/40", rowBg)}>
-          {/* span first 4 cols with empty cell */}
-          <td colSpan={4} />
-          {/* sources in result column */}
+          <td colSpan={5} />
           <td className="px-2.5 pb-2 pt-0.5" colSpan={2}>
             <div className="flex flex-wrap gap-1">
-              <span className="self-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50 mr-0.5">
+              <span className="mr-0.5 self-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50">
                 Sources
               </span>
               {row.sources.map((src, si) => (
@@ -358,24 +366,60 @@ const SEED_ROWS: [string, string][] = [
 ];
 
 export function DatasheetPage() {
-  const router   = useRouter();
-  const [navOpen, setNavOpen] = useState(false);
-  const [recent, setRecent]   = useState<RecentItem[]>([]);
-  const [rows, setRows]       = useState<EnrichRow[]>(() =>
+  const router  = useRouter();
+  const [navOpen, setNavOpen]   = useState(false);
+  const [recent, setRecent]     = useState<RecentItem[]>([]);
+  const [rows, setRows]         = useState<EnrichRow[]>(() =>
     SEED_ROWS.map(([e, p]) => newRow(e, p)),
   );
-  const [enrichingAll, setEnrichingAll] = useState(false);
+  // selected: Set of row IDs
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [enriching, setEnriching] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  const doneCount      = rows.filter((r) => r.status === "done").length;
-  const loadingCount   = rows.filter((r) => r.status === "loading").length;
-  const enrichableCount = rows.filter(
-    (r) => r.entity.trim() && r.prompt.trim() && r.status !== "done",
-  ).length;
+  // ── derived ──
+  const doneCount   = rows.filter((r) => r.status === "done").length;
+  const loadingCount = rows.filter((r) => r.status === "loading").length;
   const hasResults  = doneCount > 0;
   const totalFilled = rows.filter((r) => r.entity.trim() && r.prompt.trim()).length;
 
+  const selectedRows  = rows.filter((r) => selected.has(r.id));
+  const hasSelection  = selectedRows.length > 0;
+
+  // rows eligible for enrichment given current mode
+  const targetRows = hasSelection
+    ? selectedRows.filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done")
+    : rows.filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done");
+
+  const enrichableCount = targetRows.length;
+
+  // select-all state: true only if every row is selected
+  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  const someSelected = !allSelected && rows.some((r) => selected.has(r.id));
+
   useEffect(() => { setRecent(loadRecent()); }, []);
+
+  // keep selected clean when rows are deleted
+  useEffect(() => {
+    const ids = new Set(rows.map((r) => r.id));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
+
+  // ── callbacks ──
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelected(allSelected ? new Set() : new Set(rows.map((r) => r.id)));
+  }, [allSelected, rows]);
 
   const updateRow = useCallback((id: string, patch: Partial<EnrichRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -434,22 +478,30 @@ export function DatasheetPage() {
     [updateRow],
   );
 
-  const enrichAll = useCallback(async () => {
-    setEnrichingAll(true);
+  const runEnrich = useCallback(async () => {
+    setEnriching(true);
     const ac = new AbortController();
     abortRef.current = ac;
-    const pending = rows.filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done");
+
+    // snapshot target rows at time of click
+    const pending = (
+      hasSelection
+        ? rows.filter((r) => selected.has(r.id))
+        : rows
+    ).filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done");
+
     for (const row of pending) {
       if (ac.signal.aborted) break;
       await enrichRow(row, ac.signal);
     }
-    setEnrichingAll(false);
+
+    setEnriching(false);
     abortRef.current = null;
-  }, [rows, enrichRow]);
+  }, [rows, selected, hasSelection, enrichRow]);
 
   const cancelEnrich = useCallback(() => {
     abortRef.current?.abort();
-    setEnrichingAll(false);
+    setEnriching(false);
   }, []);
 
   const handleReenrich = useCallback(
@@ -471,6 +523,23 @@ export function DatasheetPage() {
     a.click();
     URL.revokeObjectURL(url);
   }, [rows, hasResults]);
+
+  // ── enrich button label ──
+  const enrichLabel = (() => {
+    if (enriching) {
+      return loadingCount > 0
+        ? `Enriching ${doneCount + 1}/${totalFilled}…`
+        : "Enriching…";
+    }
+    if (hasSelection) {
+      return enrichableCount > 0
+        ? `Enrich selected (${enrichableCount})`
+        : "Enrich selected";
+    }
+    return enrichableCount > 0
+      ? `Enrich all (${enrichableCount})`
+      : "Enrich all";
+  })();
 
   const sidebar = (
     <AnalystSidebarNav
@@ -517,8 +586,7 @@ export function DatasheetPage() {
         </header>
 
         {/* Toolbar */}
-        <div className="flex shrink-0 items-center gap-2 border-b border-border bg-background/80 px-4 py-2 backdrop-blur-sm">
-          {/* Page label */}
+        <div className="relative flex shrink-0 items-center gap-2 border-b border-border bg-background/80 px-4 py-2 backdrop-blur-sm">
           <span className="mr-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">
             Datasheet
           </span>
@@ -526,25 +594,15 @@ export function DatasheetPage() {
           <Button
             type="button"
             size="sm"
-            onClick={() => void enrichAll()}
-            disabled={enrichableCount === 0 || enrichingAll}
-            className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+            onClick={() => void runEnrich()}
+            disabled={enrichableCount === 0 || enriching}
+            className="h-7 rounded-lg px-3 text-xs"
           >
-            {enrichingAll ? (
-              <>
-                <Loader2 className="size-3.5 animate-spin stroke-[1.5]" />
-                {loadingCount > 0
-                  ? `Enriching ${doneCount + 1}/${totalFilled}…`
-                  : "Enriching…"}
-              </>
-            ) : (
-              <>
-                Enrich all{enrichableCount > 0 ? ` (${enrichableCount})` : ""}
-              </>
-            )}
+            {enriching && <Loader2 className="mr-1.5 size-3.5 animate-spin stroke-[1.5]" />}
+            {enrichLabel}
           </Button>
 
-          {enrichingAll && (
+          {enriching && (
             <Button
               type="button"
               variant="outline"
@@ -580,14 +638,17 @@ export function DatasheetPage() {
             Export CSV
           </Button>
 
-          {totalFilled > 0 && (
-            <span className="ml-auto text-[0.68rem] tabular-nums text-muted-foreground">
-              {doneCount}/{totalFilled} enriched
-            </span>
-          )}
+          {/* selection / progress counter */}
+          <span className="ml-auto text-[0.68rem] tabular-nums text-muted-foreground">
+            {hasSelection
+              ? `${selectedRows.length} selected · ${doneCount}/${totalFilled} enriched`
+              : totalFilled > 0
+                ? `${doneCount}/${totalFilled} enriched`
+                : ""}
+          </span>
 
           {/* progress bar */}
-          {enrichingAll && totalFilled > 0 && (
+          {enriching && totalFilled > 0 && (
             <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
               <div
                 className="h-full bg-primary transition-all duration-700 ease-out"
@@ -599,10 +660,24 @@ export function DatasheetPage() {
 
         {/* Sheet table */}
         <main className="min-h-0 flex-1 overflow-auto" aria-label="Datasheet">
-          <table className="w-full border-collapse text-sm" style={{ minWidth: 700 }}>
+          <table className="w-full border-collapse text-sm" style={{ minWidth: 720 }}>
             {/* ── Fixed header ── */}
             <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur-sm">
               <tr className="border-b border-border">
+                {/* select-all checkbox */}
+                <th
+                  style={{ width: COL_CHECK, minWidth: COL_CHECK }}
+                  className="border-r border-border/60 py-2 text-center"
+                >
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all rows"
+                    className="size-3.5 cursor-pointer accent-primary"
+                  />
+                </th>
                 <th
                   style={{ width: COL_NUM, minWidth: COL_NUM }}
                   className="border-r border-border/60 py-2 text-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50 select-none"
@@ -647,7 +722,9 @@ export function DatasheetPage() {
                   row={row}
                   index={i}
                   totalRows={rows.length}
-                  enrichingAll={enrichingAll}
+                  selected={selected.has(row.id)}
+                  enriching={enriching}
+                  onToggleSelect={toggleSelect}
                   onUpdate={updateRow}
                   onEnrich={(r) => void enrichRow(r)}
                   onDelete={(id) =>
@@ -659,12 +736,9 @@ export function DatasheetPage() {
                 />
               ))}
 
-              {/* ── Add row button as a table row ── */}
+              {/* ── Add row as table row ── */}
               <tr>
-                <td
-                  colSpan={6}
-                  className="border-b border-border/30 px-0"
-                >
+                <td colSpan={7} className="border-b border-border/30 px-0">
                   <button
                     type="button"
                     onClick={() => setRows((r) => [...r, newRow()])}
