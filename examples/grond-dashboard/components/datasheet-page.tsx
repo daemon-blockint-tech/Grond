@@ -2,8 +2,11 @@
 
 import {
   CheckCircle2,
+  ChevronDown,
   Download,
   ExternalLink,
+  FileSpreadsheet,
+  FileText,
   Loader2,
   Menu,
   Plus,
@@ -388,6 +391,7 @@ export function DatasheetPage() {
   // selected: Set of row IDs
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   // ── derived ──
@@ -526,16 +530,127 @@ export function DatasheetPage() {
     [updateRow, enrichRow],
   );
 
+  const filename = `grond-datasheet-${new Date().toISOString().slice(0, 10)}`;
+
   const downloadCsv = useCallback(() => {
     if (!hasResults) return;
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url;
-    a.download = `grond-datasheet-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `${filename}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [rows, hasResults]);
+    setExportOpen(false);
+  }, [rows, hasResults, filename]);
+
+  const downloadXlsx = useCallback(async () => {
+    if (!hasResults) return;
+    const { utils, writeFile } = await import("xlsx");
+
+    const data = rows.map((r) => ({
+      Entity:  r.entity,
+      Prompt:  r.prompt,
+      Result:  r.resultItems.length > 0 ? r.resultItems.join("\n") : r.result,
+      Sources: r.sources.map((s) => `${s.title} — ${s.url}`).join("\n"),
+    }));
+
+    const ws = utils.json_to_sheet(data);
+
+    // Column widths
+    ws["!cols"] = [
+      { wch: 22 },  // Entity
+      { wch: 32 },  // Prompt
+      { wch: 70 },  // Result
+      { wch: 55 },  // Sources
+    ];
+
+    // Wrap text + vertical align top for all data cells
+    const range = utils.decode_range(ws["!ref"] ?? "A1");
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const addr = utils.encode_cell({ r: R, c: C });
+        if (!ws[addr]) continue;
+        ws[addr].s = {
+          alignment: { wrapText: true, vertical: "top" },
+          ...(R === 0 ? { font: { bold: true } } : {}),
+        };
+      }
+    }
+
+    const wb = utils.book_new();
+    utils.book_append_sheet(wb, ws, "Datasheet");
+    writeFile(wb, `${filename}.xlsx`, { cellStyles: true });
+    setExportOpen(false);
+  }, [rows, hasResults, filename]);
+
+  const downloadPdf = useCallback(async () => {
+    if (!hasResults) return;
+    const { jsPDF } = await import("jspdf");
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+    const cols  = ["Entity", "Prompt", "Result", "Sources"];
+    const colW  = [38, 55, 110, 70];
+    const margin = 12;
+    const rowH   = 7;
+    const pageH  = doc.internal.pageSize.getHeight();
+    const pageW  = doc.internal.pageSize.getWidth();
+    let y = margin;
+
+    // Header
+    doc.setFontSize(7);
+    doc.setFont("helvetica", "bold");
+    doc.setFillColor(240, 240, 242);
+    doc.rect(margin, y - 4, pageW - margin * 2, rowH, "F");
+    let x = margin;
+    cols.forEach((col, i) => {
+      doc.text(col, x + 2, y);
+      x += colW[i];
+    });
+    y += rowH;
+
+    // Rows
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+
+    rows.filter((r) => r.status === "done").forEach((r) => {
+      const cells = [
+        r.entity,
+        r.prompt,
+        r.resultItems.join("  ·  "),
+        r.sources.map((s) => s.url).join("  "),
+      ];
+
+      // measure max lines needed
+      const lines = cells.map((txt, i) =>
+        doc.splitTextToSize(txt || "—", colW[i] - 4),
+      );
+      const maxLines = Math.max(...lines.map((l) => l.length));
+      const cellH = Math.max(rowH, maxLines * 3.5 + 2);
+
+      if (y + cellH > pageH - margin) {
+        doc.addPage();
+        y = margin;
+      }
+
+      // light alternating bg
+      doc.setFillColor(252, 252, 253);
+      doc.rect(margin, y - 4, pageW - margin * 2, cellH, "F");
+      doc.setDrawColor(220, 220, 225);
+      doc.rect(margin, y - 4, pageW - margin * 2, cellH, "S");
+
+      x = margin;
+      lines.forEach((lineArr, i) => {
+        doc.text(lineArr, x + 2, y);
+        x += colW[i];
+      });
+      y += cellH;
+    });
+
+    doc.save(`${filename}.pdf`);
+    setExportOpen(false);
+  }, [rows, hasResults, filename]);
 
   // ── enrich button label ──
   const enrichLabel = (() => {
@@ -639,17 +754,58 @@ export function DatasheetPage() {
             Add row
           </Button>
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={downloadCsv}
-            disabled={!hasResults}
-            className="h-7 gap-1.5 rounded-lg px-3 text-xs"
-          >
-            <Download className="size-3.5 stroke-[1.5]" />
-            Export CSV
-          </Button>
+          {/* Export dropdown */}
+          <div className="relative">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setExportOpen((o) => !o)}
+              disabled={!hasResults}
+              className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+            >
+              <Download className="size-3.5 stroke-[1.5]" />
+              Export
+              <ChevronDown className={cn("size-3 stroke-[1.5] transition-transform", exportOpen && "rotate-180")} />
+            </Button>
+
+            {exportOpen && (
+              <>
+                {/* backdrop */}
+                <div className="fixed inset-0 z-10" onClick={() => setExportOpen(false)} />
+                {/* menu */}
+                <div className="absolute left-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+                  <button
+                    type="button"
+                    onClick={downloadCsv}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                  >
+                    <FileText className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground" />
+                    CSV
+                    <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.csv</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void downloadXlsx()}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                  >
+                    <FileSpreadsheet className="size-3.5 shrink-0 stroke-[1.5] text-emerald-600 dark:text-emerald-400" />
+                    Excel
+                    <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.xlsx</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void downloadPdf()}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                  >
+                    <FileText className="size-3.5 shrink-0 stroke-[1.5] text-red-500" />
+                    PDF
+                    <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.pdf</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* selection / progress counter */}
           <span className="ml-auto text-[0.68rem] tabular-nums text-muted-foreground">
