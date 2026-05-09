@@ -75,16 +75,27 @@ function extractDomain(url: string): string {
 }
 
 function toCsv(rows: EnrichRow[]): string {
-  const esc = (s: string) => {
-    const q = /[",\n\r]/.test(s);
-    return q ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const header = "entity,prompt,result,sources";
+  // Wrap field in quotes and escape internal quotes — RFC 4180
+  const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+  const header = [esc("entity"), esc("prompt"), esc("result"), esc("sources")].join(",");
+
   const lines = rows.map((r) => {
-    const srcStr = r.sources.map((s) => `${s.title} (${s.url})`).join("; ");
-    return [esc(r.entity), esc(r.prompt), esc(r.result), esc(srcStr)].join(",");
+    // Join bullet items with a line break inside the quoted cell
+    const resultStr = r.resultItems.length > 0
+      ? r.resultItems.join("\n")
+      : r.result;
+
+    // Each source on its own line inside the quoted cell
+    const srcStr = r.sources
+      .map((s) => `${s.title} — ${s.url}`)
+      .join("\n");
+
+    return [esc(r.entity), esc(r.prompt), esc(resultStr), esc(srcStr)].join(",");
   });
-  return [header, ...lines].join("\n");
+
+  // UTF-8 BOM so Excel opens correctly without garbled characters
+  return "\uFEFF" + [header, ...lines].join("\r\n");
 }
 
 function parseSnippets(snippets: string[]): { items: string[]; summary: string } {
