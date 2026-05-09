@@ -392,6 +392,7 @@ export function DatasheetPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const exportBtnRef = useRef<HTMLButtonElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // ── derived ──
@@ -757,6 +758,7 @@ export function DatasheetPage() {
           {/* Export dropdown */}
           <div className="relative">
             <Button
+              ref={exportBtnRef}
               type="button"
               variant="ghost"
               size="sm"
@@ -769,42 +771,51 @@ export function DatasheetPage() {
               <ChevronDown className={cn("size-3 stroke-[1.5] transition-transform", exportOpen && "rotate-180")} />
             </Button>
 
-            {exportOpen && (
-              <>
-                {/* backdrop */}
-                <div className="fixed inset-0 z-10" onClick={() => setExportOpen(false)} />
-                {/* menu */}
-                <div className="absolute left-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
-                  <button
-                    type="button"
-                    onClick={downloadCsv}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+            {exportOpen && (() => {
+              const rect = exportBtnRef.current?.getBoundingClientRect();
+              return (
+                <>
+                  {/* backdrop */}
+                  <div className="fixed inset-0 z-[9998]" onClick={() => setExportOpen(false)} />
+                  {/* menu — fixed so it always floats above table, sticky header, everything */}
+                  <div
+                    className="fixed z-[9999] w-44 overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+                    style={{
+                      top:  (rect?.bottom ?? 0) + 6,
+                      left: rect?.left ?? 0,
+                    }}
                   >
-                    <FileText className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground" />
-                    CSV
-                    <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.csv</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void downloadXlsx()}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
-                  >
-                    <FileSpreadsheet className="size-3.5 shrink-0 stroke-[1.5] text-emerald-600 dark:text-emerald-400" />
-                    Excel
-                    <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.xlsx</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void downloadPdf()}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
-                  >
-                    <FileText className="size-3.5 shrink-0 stroke-[1.5] text-red-500" />
-                    PDF
-                    <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.pdf</span>
-                  </button>
-                </div>
-              </>
-            )}
+                    <button
+                      type="button"
+                      onClick={downloadCsv}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                    >
+                      <FileText className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground" />
+                      CSV
+                      <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.csv</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void downloadXlsx()}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                    >
+                      <FileSpreadsheet className="size-3.5 shrink-0 stroke-[1.5] text-emerald-600 dark:text-emerald-400" />
+                      Excel
+                      <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.xlsx</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void downloadPdf()}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                    >
+                      <FileText className="size-3.5 shrink-0 stroke-[1.5] text-red-500" />
+                      PDF
+                      <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.pdf</span>
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {/* selection / progress counter */}
