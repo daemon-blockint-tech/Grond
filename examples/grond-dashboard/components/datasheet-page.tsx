@@ -1,15 +1,28 @@
 "use client";
 
-import { Download, ExternalLink, Menu, Plus, Trash2 } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  Download,
+  ExternalLink,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+  Menu,
+  Plus,
+  RefreshCw,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AnalystSidebarNav } from "@/components/analyst-sidebar-nav";
 import { GrondLogo } from "@/components/grond-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Sheet,
   SheetContent,
@@ -17,116 +30,657 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  loadRecent,
-  type RecentItem,
-} from "@/lib/recent-investigations";
+  ensureAnalystId,
+  formatApiDetail,
+  formatGrondReachabilityError,
+  getGrondApiBase,
+} from "@/lib/grond-api-base";
+import { cn } from "@/lib/utils";
+import { loadRecent, type RecentItem } from "@/lib/recent-investigations";
 
-type SheetRow = {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type Source = { title: string; url: string; snippet: string };
+
+type EnrichRow = {
   id: string;
-  /** Row key / entity label (e.g. company domain, person, product). */
   entity: string;
-  /** Question or column instruction answered with web-sourced evidence in Tavily Sheets. */
-  enrichmentPrompt: string;
+  prompt: string;
+  status: "idle" | "loading" | "done" | "error";
+  result: string;
+  resultItems: string[];
+  sources: Source[];
+  error: string;
 };
 
-function newRow(): SheetRow {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function newRow(entity = "", prompt = ""): EnrichRow {
   return {
     id: crypto.randomUUID(),
-    entity: "",
-    enrichmentPrompt: "",
+    entity,
+    prompt,
+    status: "idle",
+    result: "",
+    resultItems: [],
+    sources: [],
+    error: "",
   };
 }
 
-function toCsv(rows: SheetRow[]): string {
-  const esc = (s: string) => {
-    const q = /[",\n\r]/.test(s);
-    const t = s.replace(/"/g, '""');
-    return q ? `"${t}"` : t;
-  };
-  const header = "entity,enrichment_prompt";
-  const lines = rows.map((r) => `${esc(r.entity.trim())},${esc(r.enrichmentPrompt.trim())}`);
-  return [header, ...lines].join("\n");
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
 
-/**
- * End-user workspace to **prepare** datasheet input for Tavily-style enrichment
- * ([tavily-sheets](https://github.com/tavily-ai/tavily-sheets): Tavily search + LLM + citations).
- * Full enrichment runs in hosted Sheets or a self-hosted clone — not via Grond `POST /api/v1/scan`.
- */
+function toCsv(rows: EnrichRow[]): string {
+  // Wrap field in quotes and escape internal quotes — RFC 4180
+  const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+  const header = [esc("entity"), esc("prompt"), esc("result"), esc("sources")].join(",");
+
+  const lines = rows.map((r) => {
+    // Join bullet items with a line break inside the quoted cell
+    const resultStr = r.resultItems.length > 0
+      ? r.resultItems.join("\n")
+      : r.result;
+
+    // Each source on its own line inside the quoted cell
+    const srcStr = r.sources
+      .map((s) => `${s.title} — ${s.url}`)
+      .join("\n");
+
+    return [esc(r.entity), esc(r.prompt), esc(resultStr), esc(srcStr)].join(",");
+  });
+
+  // UTF-8 BOM so Excel opens correctly without garbled characters
+  return "\uFEFF" + [header, ...lines].join("\r\n");
+}
+
+function parseSnippets(snippets: string[]): { items: string[]; summary: string } {
+  const items: string[] = [];
+  for (const raw of snippets) {
+    const parts = raw
+      .split(/\n{2,}|(?=## )/)
+      .map((s) => s.replace(/^#+\s+/, "").trim())
+      .filter((s) => s.length > 20 && s.length < 600);
+    items.push(...parts.slice(0, 3));
+    if (items.length >= 6) break;
+  }
+  const summary = items.slice(0, 3).join(" — ");
+  return { items: items.slice(0, 6), summary };
+}
+
+// ─── Column widths (px) ───────────────────────────────────────────────────────
+
+const COL_CHECK  = 36;
+const COL_NUM    = 32;
+const COL_ENTITY = 180;
+const COL_PROMPT = 220;
+const COL_STATUS = 90;
+
+// ─── Inline editable cell ────────────────────────────────────────────────────
+
+function EditableCell({
+  value,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      disabled={disabled}
+      spellCheck={false}
+      autoComplete="off"
+      className={cn(
+        "w-full bg-transparent px-2.5 py-0 text-[0.8rem] text-foreground outline-none",
+        "placeholder:text-muted-foreground/40",
+        "disabled:opacity-50 disabled:cursor-not-allowed",
+        "focus:bg-primary/[0.04]",
+      )}
+    />
+  );
+}
+
+// ─── Sheet Row ───────────────────────────────────────────────────────────────
+
+function SheetRow({
+  row,
+  index,
+  totalRows,
+  selected,
+  enriching,
+  onToggleSelect,
+  onUpdate,
+  onEnrich,
+  onDelete,
+  onReenrich,
+}: {
+  row: EnrichRow;
+  index: number;
+  totalRows: number;
+  selected: boolean;
+  enriching: boolean;
+  onToggleSelect: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<EnrichRow>) => void;
+  onEnrich: (row: EnrichRow) => void;
+  onDelete: (id: string) => void;
+  onReenrich: (row: EnrichRow) => void;
+}) {
+  const isLoading = row.status === "loading";
+  const canEnrich = row.entity.trim() && row.prompt.trim();
+
+  const rowBg = {
+    idle:    "",
+    loading: "bg-amber-500/[0.04]",
+    done:    "bg-emerald-500/[0.03]",
+    error:   "bg-red-500/[0.04]",
+  }[row.status];
+
+  return (
+    <>
+      {/* ── main data row ── */}
+      <tr
+        className={cn(
+          "group border-b border-border/50 transition-colors",
+          rowBg,
+          selected ? "bg-primary/[0.04]" : "hover:bg-muted/30",
+        )}
+      >
+        {/* Checkbox */}
+        <td
+          style={{ width: COL_CHECK, minWidth: COL_CHECK }}
+          className="border-r border-border/50 text-center"
+        >
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(row.id)}
+            aria-label={`Select row ${index + 1}`}
+            className="size-3.5 cursor-pointer accent-primary"
+          />
+        </td>
+
+        {/* # */}
+        <td
+          style={{ width: COL_NUM, minWidth: COL_NUM }}
+          className="border-r border-border/50 text-center text-[0.68rem] tabular-nums text-muted-foreground/40 select-none"
+        >
+          {index + 1}
+        </td>
+
+        {/* Entity */}
+        <td
+          style={{ width: COL_ENTITY, minWidth: COL_ENTITY }}
+          className="border-r border-border/50 py-0"
+        >
+          <EditableCell
+            value={row.entity}
+            onChange={(v) => onUpdate(row.id, { entity: v })}
+            placeholder="Entity…"
+            disabled={isLoading}
+          />
+        </td>
+
+        {/* Prompt */}
+        <td
+          style={{ width: COL_PROMPT, minWidth: COL_PROMPT }}
+          className="border-r border-border/50 py-0"
+        >
+          <EditableCell
+            value={row.prompt}
+            onChange={(v) => onUpdate(row.id, { prompt: v })}
+            placeholder="What to find out…"
+            disabled={isLoading}
+          />
+        </td>
+
+        {/* Status */}
+        <td
+          style={{ width: COL_STATUS, minWidth: COL_STATUS }}
+          className="border-r border-border/50 px-2 text-center"
+        >
+          {row.status === "idle" && (
+            <span className="text-[0.65rem] text-muted-foreground/40">—</span>
+          )}
+          {row.status === "loading" && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-50 px-1.5 py-0.5 text-[0.6rem] font-medium text-amber-700 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-300">
+              <Loader2 className="size-2.5 animate-spin stroke-[2]" aria-hidden />
+              Loading
+            </span>
+          )}
+          {row.status === "done" && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-50 px-1.5 py-0.5 text-[0.6rem] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <CheckCircle2 className="size-2.5 stroke-[2]" aria-hidden />
+              Done
+            </span>
+          )}
+          {row.status === "error" && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-50 px-1.5 py-0.5 text-[0.6rem] font-medium text-red-700 dark:border-red-500/30 dark:bg-red-950/40 dark:text-red-300">
+              Error
+            </span>
+          )}
+        </td>
+
+        {/* Result */}
+        <td className="min-w-0 border-r border-border/50 px-2.5 py-1.5">
+          {row.status === "idle" && (
+            <span className="text-[0.75rem] text-muted-foreground/30">
+              {canEnrich ? "Ready to enrich" : "Fill entity & prompt"}
+            </span>
+          )}
+          {row.status === "loading" && (
+            <span className="animate-pulse text-[0.75rem] text-muted-foreground/50">
+              Searching the web for <strong className="text-foreground">{row.entity}</strong>…
+            </span>
+          )}
+          {row.status === "error" && (
+            <span className="text-[0.75rem] text-red-500">{row.error}</span>
+          )}
+          {row.status === "done" && row.resultItems.length > 0 && (
+            <div className="scrollbar-thin max-h-[7rem] overflow-y-auto">
+              <div className="space-y-0.5 py-0.5 pr-1">
+                {row.resultItems.map((item, i) => (
+                  <div key={i} className="flex gap-1.5 text-[0.76rem] leading-[1.55] text-foreground/80">
+                    <span className="mt-[0.5em] size-1 shrink-0 rounded-full bg-foreground/20" aria-hidden />
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {row.status === "done" && row.resultItems.length === 0 && (
+            <span className="text-[0.75rem] text-muted-foreground/50">No results found.</span>
+          )}
+        </td>
+
+        {/* Actions */}
+        <td style={{ width: 88, minWidth: 88 }} className="px-1 text-center">
+          <div className="flex items-center justify-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            {row.status === "idle" && canEnrich && !enriching && (
+              <button
+                type="button"
+                onClick={() => onEnrich(row)}
+                title="Enrich this row"
+                className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
+              >
+                <Zap className="size-3 stroke-[1.5]" aria-hidden />
+              </button>
+            )}
+            {row.status === "done" && (
+              <button
+                type="button"
+                onClick={() => onReenrich(row)}
+                title="Re-enrich"
+                className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <RefreshCw className="size-3 stroke-[1.5]" aria-hidden />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onDelete(row.id)}
+              disabled={totalRows <= 1 || isLoading}
+              title="Delete row"
+              className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-red-50 hover:text-red-500 disabled:pointer-events-none disabled:opacity-20 dark:hover:bg-red-950/30 dark:hover:text-red-400"
+            >
+              <Trash2 className="size-3 stroke-[1.5]" aria-hidden />
+            </button>
+          </div>
+        </td>
+      </tr>
+
+      {/* ── sources sub-row ── */}
+      {row.status === "done" && row.sources.length > 0 && (
+        <tr className={cn("border-b border-border/40", rowBg)}>
+          <td colSpan={5} />
+          <td className="px-2.5 pb-2 pt-0.5" colSpan={2}>
+            <div className="flex flex-wrap gap-1">
+              <span className="mr-0.5 self-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                Sources
+              </span>
+              {row.sources.map((src, si) => (
+                <a
+                  key={si}
+                  href={src.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={src.title || src.url}
+                  className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground transition hover:border-border hover:bg-muted hover:text-foreground"
+                >
+                  {extractDomain(src.url)}
+                  <ExternalLink className="size-2 shrink-0 opacity-50" aria-hidden />
+                </a>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+const SEED_ROWS: [string, string][] = [
+  ["", ""],
+  ["", ""],
+  ["", ""],
+];
+
 export function DatasheetPage() {
-  const router = useRouter();
-  const entityId = useId();
-  const promptId = useId();
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [recent, setRecent] = useState<RecentItem[]>([]);
-  const [rows, setRows] = useState<SheetRow[]>(() => [newRow(), newRow(), newRow()]);
+  const router  = useRouter();
+  const [navOpen, setNavOpen]   = useState(false);
+  const [recent, setRecent]     = useState<RecentItem[]>([]);
+  const [rows, setRows]         = useState<EnrichRow[]>(() =>
+    SEED_ROWS.map(([e, p]) => newRow(e, p)),
+  );
+  // selected: Set of row IDs
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [enriching, setEnriching] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportBtnRef = useRef<HTMLButtonElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
+  // ── derived ──
+  const doneCount   = rows.filter((r) => r.status === "done").length;
+  const loadingCount = rows.filter((r) => r.status === "loading").length;
+  const hasResults  = doneCount > 0;
+  const totalFilled = rows.filter((r) => r.entity.trim() && r.prompt.trim()).length;
+
+  const selectedRows  = rows.filter((r) => selected.has(r.id));
+  const hasSelection  = selectedRows.length > 0;
+
+  // rows eligible for enrichment given current mode
+  const targetRows = hasSelection
+    ? selectedRows.filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done")
+    : rows.filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done");
+
+  const enrichableCount = targetRows.length;
+
+  // select-all state: true only if every row is selected
+  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  const someSelected = !allSelected && rows.some((r) => selected.has(r.id));
+
+  useEffect(() => { setRecent(loadRecent()); }, []);
+
+  // keep selected clean when rows are deleted
   useEffect(() => {
-    setRecent(loadRecent());
+    const ids = new Set(rows.map((r) => r.id));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
+
+  // ── callbacks ──
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
   }, []);
 
-  const handleNewIntel = useCallback(() => {
-    router.push("/");
-  }, [router]);
+  const toggleSelectAll = useCallback(() => {
+    setSelected(allSelected ? new Set() : new Set(rows.map((r) => r.id)));
+  }, [allSelected, rows]);
+
+  const updateRow = useCallback((id: string, patch: Partial<EnrichRow>) => {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }, []);
+
+  const enrichRow = useCallback(
+    async (row: EnrichRow, signal?: AbortSignal) => {
+      const entity = row.entity.trim();
+      const prompt = row.prompt.trim();
+      if (!entity || !prompt) return;
+
+      updateRow(row.id, { status: "loading", error: "", result: "", resultItems: [], sources: [] });
+
+      const analyst = ensureAnalystId();
+      const base    = getGrondApiBase();
+
+      try {
+        const res = await fetch(`${base}/api/v1/tools/tavily`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target:       entity,
+            query:        `${entity} ${prompt}`,
+            analyst_id:   analyst,
+            session_id:   crypto.randomUUID(),
+            search_depth: "advanced",
+            max_results:  5,
+          }),
+          signal,
+        });
+
+        const data: {
+          evidence?: Array<{ value?: { title?: string; url?: string; snippet?: string } }>;
+          error?: string;
+        } = await res.json();
+
+        if (!res.ok) {
+          updateRow(row.id, { status: "error", error: formatApiDetail(data, `Failed (${res.status})`) });
+          return;
+        }
+
+        const evidence = data.evidence ?? [];
+        const sources: Source[] = evidence
+          .filter((ev) => ev.value?.url)
+          .map((ev) => ({ title: ev.value?.title ?? "", url: ev.value?.url ?? "", snippet: ev.value?.snippet ?? "" }));
+
+        const snippets = evidence.map((ev) => ev.value?.snippet ?? "").filter(Boolean);
+        const { items, summary } = parseSnippets(snippets);
+
+        updateRow(row.id, { status: "done", result: summary, resultItems: items, sources });
+      } catch (e: unknown) {
+        if (signal?.aborted) { updateRow(row.id, { status: "idle" }); return; }
+        updateRow(row.id, { status: "error", error: formatGrondReachabilityError(e, base) });
+      }
+    },
+    [updateRow],
+  );
+
+  const runEnrich = useCallback(async () => {
+    setEnriching(true);
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    // snapshot target rows at time of click
+    const pending = (
+      hasSelection
+        ? rows.filter((r) => selected.has(r.id))
+        : rows
+    ).filter((r) => r.entity.trim() && r.prompt.trim() && r.status !== "done");
+
+    for (const row of pending) {
+      if (ac.signal.aborted) break;
+      await enrichRow(row, ac.signal);
+    }
+
+    setEnriching(false);
+    abortRef.current = null;
+  }, [rows, selected, hasSelection, enrichRow]);
+
+  const cancelEnrich = useCallback(() => {
+    abortRef.current?.abort();
+    setEnriching(false);
+  }, []);
+
+  const handleReenrich = useCallback(
+    (row: EnrichRow) => {
+      const reset: EnrichRow = { ...row, status: "idle", result: "", resultItems: [], sources: [], error: "" };
+      updateRow(row.id, reset);
+      void enrichRow(reset);
+    },
+    [updateRow, enrichRow],
+  );
+
+  const filename = `grond-datasheet-${new Date().toISOString().slice(0, 10)}`;
 
   const downloadCsv = useCallback(() => {
-    const nonEmpty = rows.some((r) => r.entity.trim() || r.enrichmentPrompt.trim());
-    if (!nonEmpty) return;
+    if (!hasResults) return;
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
     a.href = url;
-    a.download = `grond-datasheet-seed-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `${filename}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [rows]);
+    setExportOpen(false);
+  }, [rows, hasResults, filename]);
+
+  const downloadXlsx = useCallback(async () => {
+    if (!hasResults) return;
+    const { utils, writeFile } = await import("xlsx");
+
+    const data = rows.map((r) => ({
+      Entity:  r.entity,
+      Prompt:  r.prompt,
+      Result:  r.resultItems.length > 0 ? r.resultItems.join("\n") : r.result,
+      Sources: r.sources.map((s) => `${s.title} — ${s.url}`).join("\n"),
+    }));
+
+    const ws = utils.json_to_sheet(data);
+
+    // Column widths
+    ws["!cols"] = [
+      { wch: 22 },  // Entity
+      { wch: 32 },  // Prompt
+      { wch: 70 },  // Result
+      { wch: 55 },  // Sources
+    ];
+
+    // Wrap text + vertical align top for all data cells
+    const range = utils.decode_range(ws["!ref"] ?? "A1");
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const addr = utils.encode_cell({ r: R, c: C });
+        if (!ws[addr]) continue;
+        ws[addr].s = {
+          alignment: { wrapText: true, vertical: "top" },
+          ...(R === 0 ? { font: { bold: true } } : {}),
+        };
+      }
+    }
+
+    const wb = utils.book_new();
+    utils.book_append_sheet(wb, ws, "Datasheet");
+    writeFile(wb, `${filename}.xlsx`, { cellStyles: true });
+    setExportOpen(false);
+  }, [rows, hasResults, filename]);
+
+  const downloadPdf = useCallback(async () => {
+    if (!hasResults) return;
+    const { jsPDF } = await import("jspdf");
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+    const cols  = ["Entity", "Prompt", "Result", "Sources"];
+    const colW  = [38, 55, 110, 70];
+    const margin = 12;
+    const rowH   = 7;
+    const pageH  = doc.internal.pageSize.getHeight();
+    const pageW  = doc.internal.pageSize.getWidth();
+    let y = margin;
+
+    // Header
+    doc.setFontSize(7);
+    doc.setFont("helvetica", "bold");
+    doc.setFillColor(240, 240, 242);
+    doc.rect(margin, y - 4, pageW - margin * 2, rowH, "F");
+    let x = margin;
+    cols.forEach((col, i) => {
+      doc.text(col, x + 2, y);
+      x += colW[i];
+    });
+    y += rowH;
+
+    // Rows
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+
+    rows.filter((r) => r.status === "done").forEach((r) => {
+      const cells = [
+        r.entity,
+        r.prompt,
+        r.resultItems.join("  ·  "),
+        r.sources.map((s) => s.url).join("  "),
+      ];
+
+      // measure max lines needed
+      const lines = cells.map((txt, i) =>
+        doc.splitTextToSize(txt || "—", colW[i] - 4),
+      );
+      const maxLines = Math.max(...lines.map((l) => l.length));
+      const cellH = Math.max(rowH, maxLines * 3.5 + 2);
+
+      if (y + cellH > pageH - margin) {
+        doc.addPage();
+        y = margin;
+      }
+
+      // light alternating bg
+      doc.setFillColor(252, 252, 253);
+      doc.rect(margin, y - 4, pageW - margin * 2, cellH, "F");
+      doc.setDrawColor(220, 220, 225);
+      doc.rect(margin, y - 4, pageW - margin * 2, cellH, "S");
+
+      x = margin;
+      lines.forEach((lineArr, i) => {
+        doc.text(lineArr, x + 2, y);
+        x += colW[i];
+      });
+      y += cellH;
+    });
+
+    doc.save(`${filename}.pdf`);
+    setExportOpen(false);
+  }, [rows, hasResults, filename]);
+
+  // ── enrich button label ──
+  const enrichLabel = (() => {
+    if (enriching) {
+      return loadingCount > 0
+        ? `Enriching ${doneCount + 1}/${totalFilled}…`
+        : "Enriching…";
+    }
+    if (hasSelection) {
+      return enrichableCount > 0
+        ? `Enrich selected (${enrichableCount})`
+        : "Enrich selected";
+    }
+    return enrichableCount > 0
+      ? `Enrich all (${enrichableCount})`
+      : "Enrich all";
+  })();
 
   const sidebar = (
     <AnalystSidebarNav
       recent={recent}
-      onNew={handleNewIntel}
-      onSelectRecent={() => {
-        router.push("/");
-      }}
+      onNew={() => router.push("/")}
+      onSelectRecent={() => router.push("/")}
     />
-  );
-
-  const openMobileNav = (
-    <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-      <SheetTrigger asChild>
-        <Button
-          variant="secondary"
-          size="icon"
-          className="lg:hidden"
-          type="button"
-          aria-label="Open navigation menu"
-        >
-          <Menu className="size-5" />
-        </Button>
-      </SheetTrigger>
-      <SheetContent side="left" className="w-[min(100%-2rem,20rem)] p-0">
-        <SheetHeader className="sr-only">
-          <SheetTitle>Navigation</SheetTitle>
-        </SheetHeader>
-        <AnalystSidebarNav
-          recent={recent}
-          onNew={() => {
-            handleNewIntel();
-            setSheetOpen(false);
-          }}
-          onSelectRecent={() => {
-            router.push("/");
-            setSheetOpen(false);
-          }}
-        />
-      </SheetContent>
-    </Sheet>
   );
 
   return (
     <div className="flex min-h-screen bg-background">
+      {/* Sidebar */}
       <aside
         className="hidden h-svh max-h-svh w-72 shrink-0 overflow-hidden border-r border-zinc-200 bg-white lg:flex lg:flex-col dark:border-white/10 dark:bg-zinc-950"
         aria-label="Workspace"
@@ -135,168 +689,260 @@ export function DatasheetPage() {
       </aside>
 
       <div className="flex h-svh max-h-svh min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Mobile header */}
         <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 py-3 lg:hidden">
-          {openMobileNav}
+          <Sheet open={navOpen} onOpenChange={setNavOpen}>
+            <SheetTrigger asChild>
+              <Button variant="secondary" size="icon" type="button" aria-label="Open navigation">
+                <Menu className="size-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-[min(100%-2rem,20rem)] p-0">
+              <SheetHeader className="sr-only">
+                <SheetTitle>Navigation</SheetTitle>
+              </SheetHeader>
+              <AnalystSidebarNav
+                recent={recent}
+                onNew={() => { router.push("/"); setNavOpen(false); }}
+                onSelectRecent={() => { router.push("/"); setNavOpen(false); }}
+              />
+            </SheetContent>
+          </Sheet>
           <div className="flex flex-1 justify-center px-2">
             <GrondLogo className="max-w-[8.5rem] justify-center [&_img]:object-center" />
           </div>
           <ThemeToggle />
         </header>
 
-        <main
-          id="main-content"
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
-          aria-label="Datasheet enrichment"
-        >
-          <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-10">
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                New · End user
-              </p>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                Datasheet enrichment
-              </h1>
-              <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-                Build rows for{" "}
-                <strong className="font-medium text-foreground">entity</strong> +{" "}
-                <strong className="font-medium text-foreground">enrichment prompt</strong> (what each
-                cell should answer using the open web). Export CSV and continue in{" "}
-                <a
-                  href="https://sheets.tavily.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-medium text-foreground underline decoration-zinc-400 underline-offset-2 hover:decoration-foreground dark:decoration-zinc-500"
-                >
-                  Tavily Sheets
-                </a>{" "}
-                or self-host{" "}
-                <a
-                  href="https://github.com/tavily-ai/tavily-sheets"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-0.5 font-medium text-foreground underline decoration-zinc-400 underline-offset-2 hover:decoration-foreground dark:decoration-zinc-500"
-                >
-                  tavily-ai/tavily-sheets
-                  <ExternalLink className="size-3.5 opacity-70" aria-hidden />
-                </a>
-                . This page does not call the Grond scan pipeline.
-              </p>
-            </div>
+        {/* Toolbar */}
+        <div className="relative flex shrink-0 items-center gap-2 border-b border-border bg-background/80 px-4 py-2 backdrop-blur-sm">
+          <span className="mr-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">
+            Datasheet
+          </span>
 
-            <div className="mt-8 flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                className="rounded-xl gap-1.5"
-                onClick={() => setRows((r) => [...r, newRow()])}
-              >
-                <Plus className="size-4" aria-hidden />
-                Add row
-              </Button>
-              <Button
-                type="button"
-                className="rounded-xl gap-1.5"
-                onClick={downloadCsv}
-                disabled={!rows.some((r) => r.entity.trim() || r.enrichmentPrompt.trim())}
-              >
-                <Download className="size-4" aria-hidden />
-                Export CSV
-              </Button>
-            </div>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void runEnrich()}
+            disabled={enrichableCount === 0 || enriching}
+            className="h-7 rounded-lg px-3 text-xs"
+          >
+            {enriching && <Loader2 className="mr-1.5 size-3.5 animate-spin stroke-[1.5]" />}
+            {enrichLabel}
+          </Button>
 
-            <div className="mt-6 overflow-x-auto rounded-2xl border border-border bg-card shadow-sm dark:border-white/10 dark:bg-zinc-900/40">
-              <table className="w-full min-w-[36rem] border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/40 dark:bg-white/5">
-                    <th scope="col" className="px-3 py-3 font-medium sm:px-4">
-                      Entity / key
-                    </th>
-                    <th scope="col" className="px-3 py-3 font-medium sm:px-4">
-                      Enrichment prompt (column instruction)
-                    </th>
-                    <th scope="col" className="w-12 px-2 py-3 sm:w-14">
-                      <span className="sr-only">Remove</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => (
-                    <tr
-                      key={row.id}
-                      className="border-b border-border/80 last:border-0 dark:border-white/10"
+          {enriching && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={cancelEnrich}
+              className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+            >
+              <X className="size-3.5 stroke-[1.5]" />
+              Cancel
+            </Button>
+          )}
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setRows((r) => [...r, newRow()])}
+            className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+          >
+            <Plus className="size-3.5 stroke-[1.5]" />
+            Add row
+          </Button>
+
+          {/* Export dropdown */}
+          <div className="relative">
+            <Button
+              ref={exportBtnRef}
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setExportOpen((o) => !o)}
+              disabled={!hasResults}
+              className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+            >
+              <Download className="size-3.5 stroke-[1.5]" />
+              Export
+              <ChevronDown className={cn("size-3 stroke-[1.5] transition-transform", exportOpen && "rotate-180")} />
+            </Button>
+
+            {exportOpen && (() => {
+              const rect = exportBtnRef.current?.getBoundingClientRect();
+              return (
+                <>
+                  {/* backdrop */}
+                  <div className="fixed inset-0 z-[9998]" onClick={() => setExportOpen(false)} />
+                  {/* menu — fixed so it always floats above table, sticky header, everything */}
+                  <div
+                    className="fixed z-[9999] w-44 overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+                    style={{
+                      top:  (rect?.bottom ?? 0) + 6,
+                      left: rect?.left ?? 0,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={downloadCsv}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
                     >
-                      <td className="align-top p-2 sm:p-3">
-                        <label htmlFor={`${entityId}-${row.id}`} className="sr-only">
-                          Entity row {index + 1}
-                        </label>
-                        <Input
-                          id={`${entityId}-${row.id}`}
-                          placeholder="e.g. example.com, ACME Corp"
-                          value={row.entity}
-                          onChange={(e) =>
-                            setRows((prev) =>
-                              prev.map((r) =>
-                                r.id === row.id ? { ...r, entity: e.target.value } : r,
-                              ),
-                            )
-                          }
-                          className="rounded-xl bg-background dark:bg-zinc-950/80"
-                          autoComplete="off"
-                        />
-                      </td>
-                      <td className="align-top p-2 sm:p-3">
-                        <label htmlFor={`${promptId}-${row.id}`} className="sr-only">
-                          Prompt row {index + 1}
-                        </label>
-                        <Textarea
-                          id={`${promptId}-${row.id}`}
-                          placeholder="e.g. Recent funding or leadership change (cite sources)."
-                          value={row.enrichmentPrompt}
-                          onChange={(e) =>
-                            setRows((prev) =>
-                              prev.map((r) =>
-                                r.id === row.id
-                                  ? { ...r, enrichmentPrompt: e.target.value }
-                                  : r,
-                              ),
-                            )
-                          }
-                          className="min-h-[3rem] rounded-xl bg-background dark:bg-zinc-950/80"
-                          rows={2}
-                        />
-                      </td>
-                      <td className="align-top p-2 text-center sm:p-3">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="size-9 text-muted-foreground hover:text-destructive"
-                          aria-label={`Remove row ${index + 1}`}
-                          disabled={rows.length <= 1}
-                          onClick={() =>
-                            setRows((prev) =>
-                              prev.length <= 1 ? prev : prev.filter((r) => r.id !== row.id),
-                            )
-                          }
-                        >
-                          <Trash2 className="size-4" aria-hidden />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <p className="mt-6 text-xs text-muted-foreground">
-              Need full OSINT reports from Grond?{" "}
-              <Link href="/" className="font-medium text-foreground underline underline-offset-2">
-                Back to Intel
-              </Link>
-              .
-            </p>
+                      <FileText className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground" />
+                      CSV
+                      <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.csv</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void downloadXlsx()}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                    >
+                      <FileSpreadsheet className="size-3.5 shrink-0 stroke-[1.5] text-emerald-600 dark:text-emerald-400" />
+                      Excel
+                      <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.xlsx</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void downloadPdf()}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[0.75rem] text-foreground/80 transition hover:bg-muted"
+                    >
+                      <FileText className="size-3.5 shrink-0 stroke-[1.5] text-red-500" />
+                      PDF
+                      <span className="ml-auto text-[0.65rem] text-muted-foreground/50">.pdf</span>
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
+
+          {/* selection / progress counter */}
+          <span className="ml-auto text-[0.68rem] tabular-nums text-muted-foreground">
+            {hasSelection
+              ? `${selectedRows.length} selected · ${doneCount}/${totalFilled} enriched`
+              : totalFilled > 0
+                ? `${doneCount}/${totalFilled} enriched`
+                : ""}
+          </span>
+
+          {/* progress bar */}
+          {enriching && totalFilled > 0 && (
+            <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-700 ease-out"
+                style={{ width: `${Math.round((doneCount / totalFilled) * 100)}%` }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Sheet table */}
+        <main className="min-h-0 flex-1 overflow-auto" aria-label="Datasheet">
+          <table className="w-full border-collapse text-sm" style={{ minWidth: 720 }}>
+            {/* ── Fixed header ── */}
+            <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur-sm">
+              <tr className="border-b border-border">
+                {/* select-all checkbox */}
+                <th
+                  style={{ width: COL_CHECK, minWidth: COL_CHECK }}
+                  className="border-r border-border/60 py-2 text-center"
+                >
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all rows"
+                    className="size-3.5 cursor-pointer accent-primary"
+                  />
+                </th>
+                <th
+                  style={{ width: COL_NUM, minWidth: COL_NUM }}
+                  className="border-r border-border/60 py-2 text-center text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground/50 select-none"
+                >
+                  #
+                </th>
+                <th
+                  style={{ width: COL_ENTITY, minWidth: COL_ENTITY }}
+                  className="border-r border-border/60 px-2.5 py-2 text-left text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Entity
+                </th>
+                <th
+                  style={{ width: COL_PROMPT, minWidth: COL_PROMPT }}
+                  className="border-r border-border/60 px-2.5 py-2 text-left text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Prompt
+                </th>
+                <th
+                  style={{ width: COL_STATUS, minWidth: COL_STATUS }}
+                  className="border-r border-border/60 px-2.5 py-2 text-center text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Status
+                </th>
+                <th className="border-r border-border/60 px-2.5 py-2 text-left text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Result
+                </th>
+                <th
+                  style={{ width: 88, minWidth: 88 }}
+                  className="px-2 py-2 text-center text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  Actions
+                </th>
+              </tr>
+            </thead>
+
+            {/* ── Body ── */}
+            <tbody>
+              {rows.map((row, i) => (
+                <SheetRow
+                  key={row.id}
+                  row={row}
+                  index={i}
+                  totalRows={rows.length}
+                  selected={selected.has(row.id)}
+                  enriching={enriching}
+                  onToggleSelect={toggleSelect}
+                  onUpdate={updateRow}
+                  onEnrich={(r) => void enrichRow(r)}
+                  onDelete={(id) =>
+                    setRows((prev) =>
+                      prev.length <= 1 ? prev : prev.filter((r) => r.id !== id),
+                    )
+                  }
+                  onReenrich={handleReenrich}
+                />
+              ))}
+
+              {/* ── Add row as table row ── */}
+              <tr>
+                <td colSpan={7} className="border-b border-border/30 px-0">
+                  <button
+                    type="button"
+                    onClick={() => setRows((r) => [...r, newRow()])}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-[0.73rem] text-muted-foreground/50 transition hover:bg-muted/40 hover:text-muted-foreground"
+                  >
+                    <Plus className="size-3.5 stroke-[1.5]" aria-hidden />
+                    Add row
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </main>
+
+        {/* Footer */}
+        <footer className="shrink-0 border-t border-border/40 px-4 py-2">
+          <p className="text-[0.68rem] text-muted-foreground">
+            <Link href="/" className="font-medium text-foreground underline underline-offset-2">Intel</Link>
+            {" · "}
+            <Link href="/recon" className="font-medium text-foreground underline underline-offset-2">Recon</Link>
+            {" · "}
+            <Link href="/admin" className="font-medium text-foreground underline underline-offset-2">Admin</Link>
+          </p>
+        </footer>
       </div>
     </div>
   );

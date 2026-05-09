@@ -51,6 +51,61 @@ COMPANY_INTEL_QUERIES = [
     "{target} data breach security incident leak",
 ]
 
+# ---- Deep-dive query banks (NKRI-level intelligence standard) ---------------
+
+# Affiliations, partners, investors, and network mapping
+AFFILIATION_QUERIES = [
+    "{target} investors backers venture capital funding partners",
+    "{target} affiliates subsidiaries parent company corporate structure",
+    "{target} board of directors advisors shareholders",
+    "{target} strategic partnerships alliances joint venture",
+    "{target} contracts government clients customers",
+]
+
+# Key person research — C-level, founders, and known operators
+KEY_PERSON_QUERIES = [
+    "{target} CEO founder owner operator background history",
+    "{target} CTO CISO security lead engineer",
+    "{target} key personnel management team biography",
+    '"{target}" executive director "was formerly" OR "previously" OR "prior to"',
+    "{target} founder LinkedIn profile social media accounts",
+]
+
+# Intent and operational analysis
+INTENT_QUERIES = [
+    "{target} purpose mission statement objectives goals",
+    "{target} strategy expansion plans roadmap",
+    "{target} controversies criticism allegations fraud",
+    "{target} legal action lawsuit court judgment",
+    "{target} sanctions OFAC regulatory action investigation",
+]
+
+# Financial and legal intelligence
+FINANCIAL_LEGAL_QUERIES = [
+    "{target} financial statements revenue annual report",
+    "{target} bankruptcy insolvency debt default",
+    "{target} SEC filing 10-K 8-K regulatory disclosure",
+    "{target} court case lawsuit indictment criminal",
+    "{target} money laundering fraud financial crime",
+]
+
+# Leaked documents and exposed data
+LEAKED_DOC_QUERIES = [
+    '"{target}" site:scribd.com OR site:documentcloud.org',
+    '"{target}" filetype:pdf disclosure report leak',
+    '"{target}" pastebin hastebin leaked credentials dump',
+    '"{target}" (breach OR leak OR dump) (data OR credentials OR emails)',
+    '"{target}" site:wikileaks.org OR site:icij.org OR site:ddosecrets.com',
+]
+
+# Geographic and infrastructure intelligence
+GEO_INFRASTRUCTURE_QUERIES = [
+    "{target} headquarters office location address",
+    "{target} registered address country jurisdiction",
+    "{target} IP range ASN network infrastructure hosting",
+    "{target} CDN hosting provider registrar WHOIS",
+]
+
 SOCIAL_INTEL_QUERIES = [
     '"{target}" site:linkedin.com',
     '"{target}" site:twitter.com OR site:x.com',
@@ -70,6 +125,39 @@ PUBLIC_SOCIAL_TAVILY_QUERIES = [
     '"{target}" site:news.ycombinator.com',
     '"{target}" site:linkedin.com',
 ]
+
+# Convenience bundle: full OSINT fan-out (NKRI standard)
+DEEP_OSINT_QUERY_BANKS = {
+    "company": COMPANY_INTEL_QUERIES,
+    "affiliations": AFFILIATION_QUERIES,
+    "key_persons": KEY_PERSON_QUERIES,
+    "intent": INTENT_QUERIES,
+    "financial_legal": FINANCIAL_LEGAL_QUERIES,
+    "leaked_docs": LEAKED_DOC_QUERIES,
+    "geo_infra": GEO_INFRASTRUCTURE_QUERIES,
+}
+
+
+def build_deep_osint_queries(target: str, banks: list[str] | None = None) -> list[str]:
+    """
+    Return a flat list of search queries for the given target across the specified
+    DEEP_OSINT_QUERY_BANKS. Default: all banks except leaked_docs (run separately).
+
+    Parameters
+    ----------
+    target:
+        The investigation subject string.
+    banks:
+        Subset of DEEP_OSINT_QUERY_BANKS keys to include.
+        Defaults to company + affiliations + key_persons + intent + financial_legal + geo_infra.
+    """
+    default_banks = ["company", "affiliations", "key_persons", "intent", "financial_legal", "geo_infra"]
+    selected = banks or default_banks
+    out: list[str] = []
+    for key in selected:
+        templates = DEEP_OSINT_QUERY_BANKS.get(key, [])
+        out.extend(t.format(target=target) for t in templates)
+    return out
 
 InvestigationProfile = Literal["general", "company", "social"]
 SocialPlatform = Literal[

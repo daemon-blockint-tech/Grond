@@ -178,6 +178,11 @@ class IntelReport(BaseModel):
         description="Short bullets derived deterministically from primary (non-excluded) findings.",
     )
 
+    critical_questions: list[str] = Field(
+        default_factory=list,
+        description="LLM-generated critical questions the analyst should investigate further.",
+    )
+
     # --- Structured findings ---
     sections: list[ReportSection] = Field(default_factory=list)
 

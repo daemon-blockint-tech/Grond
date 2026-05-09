@@ -1,6 +1,8 @@
 /**
  * Reusable query templates for Tavily and Shodan.
  * The orchestrator agent selects from these based on the goal.
+ * Extended to NKRI-level deep OSINT standard: affiliations, key persons,
+ * intent analysis, financial/legal, leaked docs, geo/infra.
  */
 
 export const COMPANY_INTEL_QUERIES = [
@@ -9,6 +11,59 @@ export const COMPANY_INTEL_QUERIES = [
   "{target} recent news funding acquisition merger",
   "{target} data breach security incident leak exposure",
   "{target} job postings engineering security operations",
+];
+
+/** Affiliations, investors, partners, corporate structure */
+export const AFFILIATION_QUERIES = [
+  "{target} investors backers venture capital funding partners",
+  "{target} affiliates subsidiaries parent company corporate structure",
+  "{target} board of directors advisors shareholders",
+  "{target} strategic partnerships alliances joint venture",
+  "{target} contracts government clients customers",
+];
+
+/** Key person research — C-level, founders, operators */
+export const KEY_PERSON_QUERIES = [
+  "{target} CEO founder owner operator background history",
+  "{target} CTO CISO security lead engineer",
+  "{target} key personnel management team biography",
+  '"{target}" executive director "was formerly" OR "previously" OR "prior to"',
+  "{target} founder LinkedIn profile social media accounts",
+];
+
+/** Intent and operational analysis — what are they doing and why */
+export const INTENT_QUERIES = [
+  "{target} purpose mission statement objectives goals",
+  "{target} strategy expansion plans roadmap",
+  "{target} controversies criticism allegations fraud",
+  "{target} legal action lawsuit court judgment",
+  "{target} sanctions OFAC regulatory action investigation",
+];
+
+/** Financial and legal intelligence */
+export const FINANCIAL_LEGAL_QUERIES = [
+  "{target} financial statements revenue annual report",
+  "{target} bankruptcy insolvency debt default",
+  "{target} SEC filing 10-K 8-K regulatory disclosure",
+  "{target} court case lawsuit indictment criminal",
+  "{target} money laundering fraud financial crime",
+];
+
+/** Leaked documents and exposed data — Scribd, DocCloud, filetype searches */
+export const LEAKED_DOC_QUERIES = [
+  '"{target}" site:scribd.com OR site:documentcloud.org',
+  '"{target}" filetype:pdf disclosure report leak',
+  '"{target}" pastebin hastebin leaked credentials dump',
+  '"{target}" (breach OR leak OR dump) (data OR credentials OR emails)',
+  '"{target}" site:wikileaks.org OR site:icij.org OR site:ddosecrets.com',
+];
+
+/** Geographic and infrastructure intelligence */
+export const GEO_INFRASTRUCTURE_QUERIES = [
+  "{target} headquarters office location address",
+  "{target} registered address country jurisdiction",
+  "{target} IP range ASN network infrastructure hosting",
+  "{target} CDN hosting provider registrar WHOIS",
 ];
 
 export const SOCIAL_INTEL_QUERIES = [
@@ -62,9 +117,23 @@ export const SHODAN_TEMPLATES = {
   exposedDbs: () => "port:3306 OR port:5432 OR port:27017 OR port:6379 OR port:9200",
 };
 
+/**
+ * Deep OSINT query banks keyed by category (NKRI standard).
+ * Use buildDeepOsintQueries() for the full fan-out.
+ */
+export const DEEP_OSINT_QUERY_BANKS: Record<string, string[]> = {
+  company: COMPANY_INTEL_QUERIES,
+  affiliations: AFFILIATION_QUERIES,
+  key_persons: KEY_PERSON_QUERIES,
+  intent: INTENT_QUERIES,
+  financial_legal: FINANCIAL_LEGAL_QUERIES,
+  leaked_docs: LEAKED_DOC_QUERIES,
+  geo_infra: GEO_INFRASTRUCTURE_QUERIES,
+};
+
 export function buildTavilyQueries(
   target: string,
-  mode: "company" | "social" | "general" | "full" | "dwm",
+  mode: "company" | "social" | "general" | "full" | "dwm" | "deep",
 ): string[] {
   let templates: string[];
   if (mode === "company") {
@@ -73,12 +142,47 @@ export function buildTavilyQueries(
     templates = PUBLIC_SOCIAL_TAVILY_QUERIES;
   } else if (mode === "dwm") {
     templates = DARK_WEB_MARKETPLACE_INTEL_QUERIES;
+  } else if (mode === "deep") {
+    // Full NKRI-level fan-out: all banks
+    templates = [
+      ...COMPANY_INTEL_QUERIES,
+      ...AFFILIATION_QUERIES,
+      ...KEY_PERSON_QUERIES,
+      ...INTENT_QUERIES,
+      ...FINANCIAL_LEGAL_QUERIES,
+      ...LEAKED_DOC_QUERIES,
+      ...GEO_INFRASTRUCTURE_QUERIES,
+    ];
   } else if (mode === "general") {
-    templates = [...COMPANY_INTEL_QUERIES];
+    templates = [...COMPANY_INTEL_QUERIES, ...AFFILIATION_QUERIES, ...KEY_PERSON_QUERIES];
   } else {
-    templates = [...COMPANY_INTEL_QUERIES, ...PUBLIC_SOCIAL_TAVILY_QUERIES];
+    // full
+    templates = [
+      ...COMPANY_INTEL_QUERIES,
+      ...AFFILIATION_QUERIES,
+      ...KEY_PERSON_QUERIES,
+      ...PUBLIC_SOCIAL_TAVILY_QUERIES,
+    ];
   }
   return templates.map((t) => t.replace(/\{target\}/g, target));
+}
+
+/**
+ * Build a flat list of deep OSINT queries across specific bank keys.
+ * Default: company + affiliations + key_persons + intent + financial_legal + geo_infra.
+ */
+export function buildDeepOsintQueries(
+  target: string,
+  banks?: string[],
+): string[] {
+  const defaults = ["company", "affiliations", "key_persons", "intent", "financial_legal", "geo_infra"];
+  const selected = banks ?? defaults;
+  const out: string[] = [];
+  for (const key of selected) {
+    const templates = DEEP_OSINT_QUERY_BANKS[key] ?? [];
+    out.push(...templates.map((t) => t.replace(/\{target\}/g, target)));
+  }
+  return out;
 }
 
 /** True when the analyst goal suggests dark-web–marketplace style clearnet OSINT (DWM seeds). */

@@ -20,6 +20,7 @@ import { logger } from "../observability/logger.js";
 import {
   runShodanQuery,
   runTavilyQuery,
+  runTavilyExtract,
   runNmapScan,
   runTwitterSearch,
   runHarvesterQuery,
@@ -31,12 +32,13 @@ import {
   NmapScanInput,
   TwitterSearchInput,
   TavilyQueryInput,
+  TavilyExtractInput,
   HarvesterQueryInput,
   OsintmapQueryInput,
   EdgarTextSearchInput,
   type OsintIntent,
 } from "../tools/grond-api.js";
-import { buildTavilyQueries, goalSuggestsDwmMarketplaceOsint } from "../tools/query-templates.js";
+import { buildTavilyQueries, buildDeepOsintQueries, goalSuggestsDwmMarketplaceOsint } from "../tools/query-templates.js";
 import type { IntelReport } from "../types/evidence.js";
 
 // ---------------------------------------------------------------------------
@@ -324,6 +326,37 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "tavily_extract",
+    description:
+      "Extract full-page content (markdown) from specific URLs via Tavily Extract. " +
+      "Use AFTER tavily_search to pull the complete text of important pages: " +
+      "LinkedIn profiles, SEC filings, Scribd/DocumentCloud documents, court records, " +
+      "news articles with key facts, and any URL where the snippet is insufficient. " +
+      "Batch up to 20 URLs per call. Use focus_query to rank chunks by relevance.",
+    input_schema: {
+      type: "object" as const,
+      required: ["target", "urls", "session_id"],
+      properties: {
+        target: { type: "string", description: "Investigation / case label" },
+        urls: {
+          type: "array",
+          items: { type: "string" },
+          description: "URLs to extract (max 20 per call)",
+        },
+        session_id: { type: "string" },
+        focus_query: {
+          type: "string",
+          description: "Reranks extracted chunks by relevance to this query",
+        },
+        extract_depth: {
+          type: "string",
+          enum: ["basic", "advanced"],
+          default: "advanced",
+        },
+      },
+    },
+  },
+  {
     name: "generate_report",
     description:
       "Generate the final intel report from all collected evidence. " +
@@ -372,6 +405,12 @@ export async function runOsintOrchestrator(
       goalSuggestsDwmMarketplaceOsint(req.goal) ?
         `Suggested clearnet Tavily seeds (OSINT Dojo DWM–style; adapt as needed):\n${buildTavilyQueries(req.target, "dwm").map((q) => `- ${q}`).join("\n")}\n`
       : "";
+    // Always inject deep OSINT query hints for the agent to use as starting points
+    const deepHints = buildDeepOsintQueries(req.target);
+    const deepHintBlock =
+      `\nDeep OSINT query bank (run tavily_search for EACH, search_depth=advanced, max_results=10):\n` +
+      deepHints.map((q) => `- ${q}`).join("\n") +
+      "\n";
     const messages: Anthropic.MessageParam[] = [
       {
         role: "user",
@@ -384,7 +423,8 @@ export async function runOsintOrchestrator(
           (req.tavily_time_range ? `Tavily time_range: ${req.tavily_time_range}\n` : "") +
           (req.authorization_ref ? `Authorization ref: ${req.authorization_ref}\n` : "") +
           (dwmHint ? `\n${dwmHint}` : "") +
-          "\nBegin the investigation.",
+          deepHintBlock +
+          "\nBegin the investigation. Run ALL query categories above via tavily_search before calling generate_report.",
       },
     ];
 
@@ -627,6 +667,23 @@ async function dispatchTool(
       return runMetadataAnalyze(parsed);
     }
 
+    case "tavily_extract": {
+      const urls = Array.isArray(input["urls"])
+        ? (input["urls"] as string[]).filter((u) => typeof u === "string")
+        : [];
+      if (urls.length === 0) throw new Error("tavily_extract: urls array is empty");
+      const parsed = TavilyExtractInput.parse({
+        target: String(input["target"]),
+        urls,
+        analyst_id,
+        session_id,
+        query: input["focus_query"] !== undefined ? String(input["focus_query"]) : `extract: ${String(input["target"])}`,
+        focus_query: input["focus_query"] !== undefined ? String(input["focus_query"]) : undefined,
+        extract_depth: (input["extract_depth"] as "basic" | "advanced") ?? "advanced",
+      });
+      return runTavilyExtract(parsed);
+    }
+
     case "generate_report":
       return generateReport({
         session_id,
@@ -646,27 +703,58 @@ async function dispatchTool(
 // ---------------------------------------------------------------------------
 
 function buildSystemPrompt(req: OrchestratorRequest): string {
-  return `You are the OSINT Orchestrator for Grond, an intelligence analysis platform.
+  return `You are the OSINT Orchestrator for Grond — an advanced intelligence analysis platform used by professional analysts.
 
-## Your Job
-Given a target and goal, plan and execute an intelligence collection workflow by calling tools in the correct order.
+## Your Mission
+Produce intelligence at the **NKRI standard**: deep, structured, analytical, cross-corroborated. You do not merely collect facts — you interrogate them. Every finding must be challenged: What is the real intent? Who are the actual backers? What are the hidden connections? What does this reveal that was not obvious?
 
-## Mandatory Sequence
-1. Start with PASSIVE tools (shodan_search, tavily_search, edgar_text_search for US SEC-registered companies and filing text, osintmap_lookup when the goal references a geographic jurisdiction, twitter_search, theharvester_search, exiftool_metadata when an artifact is supplied as base64) — prefer passive theHarvester sources (default duckduckgo,crtsh).
-2. Issue multiple tavily_search calls covering: subject footprint, leadership, tech stack, news, breach mentions, official presence, and (when the goal is social or reputational) public indexed discussion via investigation_profile=social, optional platform, or site: operators (reddit, x, …). When the goal references dark web / darknet marketplaces, add **clearnet-only** searches (LE takedowns, sanctions, blockchain analytics reporting, academic/security research); see **Dark web marketplace OSINT** below — never use tools here to access onion services or illicit markets.
-3. Issue twitter_search calls using the appropriate intent for the goal:
-   - Reputation / brand monitoring → intent: "company_monitoring"
-   - Person research → intent: "person_research"
-   - Breach / leak signals → intent: "breach_leak_monitor"
-   - Hashtag movement → intent: "hashtag_campaign"
-   - Account influence mapping → intent: "account_network"
-4. Only call nmap_scan if allow_active_scan=true AND an authorization_ref is provided.
-5. Always call generate_report as the FINAL tool after collection is complete.
+## Mandatory Collection Sequence
+1. **Passive collection first** (always):
+   - shodan_search: exposed infrastructure, services, CVEs, banners
+   - tavily_search: run a FULL FAN-OUT across ALL query categories (see Query Strategy below)
+   - theharvester_search: subdomains, emails, hosts (passive sources: duckduckgo, crtsh)
+   - edgar_text_search: if target is or may be a US public filer (company name, ticker, CIK)
+   - osintmap_lookup: if goal references a specific country/jurisdiction
+   - twitter_search: 3–5 calls across multiple intents
 
-## Dark web marketplace OSINT (OSINT Dojo DWM)
-- Methodology reference: [Dark Web Marketplace OSINT Attack Surface](https://www.osintdojo.com/diagrams/dwm) — [PDF diagram](https://github.com/sinwindie/OSINT/raw/master/DarkWeb/DWM%20OSINT%20Attack%20Surface.pdf); curated links: [OSINT Dojo — Dark Web resources](https://www.osintdojo.com/resources/#dark_web).
-- Stay on **indexed clearnet** and **public-record** sources (news, government releases, court docs, researcher blogs, exchange/analytics firm reports). Tag unverified forum or leak mentions as low confidence.
-- Cross-validate with tavily_search + edgar_text_search (if a US filer is implicated) and normal company/news pivots; do not treat marketplace chatter as fact without corroboration.
+2. **Deep query fan-out via tavily_search** (REQUIRED for every target):
+   Run at minimum ONE tavily_search call for EACH of these categories, using search_depth=advanced and max_results=10:
+   - **Company basics**: leadership, tech stack, news, breach history
+   - **Affiliations**: investors, subsidiaries, partners, board members, government contracts
+   - **Key persons**: CEO/founder background, CTO, CISO — include "was formerly", "prior to" pivots; search LinkedIn/social by name
+   - **Intent analysis**: what is the entity's actual goal? Controversies, allegations, regulatory actions, sanctions
+   - **Financial/legal**: court filings, SEC disclosures, bankruptcy, fraud allegations, money laundering
+   - **Leaked documents**: Scribd, DocumentCloud, filetype:pdf, pastebin dumps, breach databases
+   - **Social/reputation**: Reddit, X/Twitter, YouTube, LinkedIn — public indexed discourse
+
+3. **Twitter multi-intent sweep** (REQUIRED):
+   Issue twitter_search with EACH relevant intent:
+   - company_monitoring (exclude_retweets=true)
+   - person_research (for each identified key person)
+   - breach_leak_monitor (min_likes=10 to cut noise)
+   - account_network (for mapping influence)
+
+4. **Active scan** — only if allow_active_scan=true AND authorization_ref provided:
+   - nmap_scan with the provided profile
+
+5. **generate_report** — ALWAYS the final tool call.
+
+## Critical Questioning (REQUIRED for all findings)
+After collecting evidence, before calling generate_report, ask yourself and encode into the goal field of generate_report:
+- **"What is their real intention?"** — Does stated purpose match observed behavior?
+- **"Who really controls this?"** — Named executives vs actual beneficial owners/backers?
+- **"What are the hidden connections?"** — Affiliates, shell companies, cross-directorships?
+- **"What does this MEAN for the analyst?"** — So what? What action should be taken?
+- **"What is still unknown?"** — Where are the gaps? What could not be verified?
+
+## Key Person Deep-Dive Protocol
+For each C-level / founder / key person identified:
+1. Search their full name + company + "background" OR "history"
+2. Search their LinkedIn profile (site:linkedin.com + name)
+3. Search their Twitter/X handle if known (investigation_profile=social)
+4. Search "formerly" / "prior to" pivots — previous companies, roles
+5. Search for photos (site:instagram.com OR site:facebook.com + name) — visual corroboration
+6. Note: generate a per-person mini-profile in the goal field of generate_report
 
 ## Twitter OSINT Rules (Bellingcat methodology)
 - Use intent-based queries rather than raw queries unless you have a specific X API v2 operator need.
@@ -675,27 +763,32 @@ Given a target and goal, plan and execute an intelligence collection workflow by
 - For high-engagement signal filtering, set min_likes ≥ 100 or min_retweets ≥ 50.
 - For media evidence (visual verification), set has_media: true.
 - Use from_accounts to focus on specific handles of interest once identified.
-- Location search (geo_event): use near_place + within_radius (e.g. near_place \"chicago\", within_radius \"2mi\") or geocode_lat/geocode_lon/geocode_radius; X caps radius at 25 mi — larger values are clamped server-side. Geo labels are noisy (profile vs GPS vs declared place); corroborate with Tavily and tighten dates.
-- Remember: twitter_search returns COMMUNITY-tier evidence by default.
-  Only verified-account tweets are elevated to MEDIA tier automatically.
-  Anonymous/sensitive tweets are tagged ANONYMOUS.
+- Location search (geo_event): use near_place + within_radius or geocode_*; X caps radius at 25 mi.
+- Twitter/X data is COMMUNITY tier by default; cross-validate important claims with tavily_search.
+
+## Dark Web Marketplace OSINT (OSINT Dojo DWM)
+- Methodology: [OSINT Dojo DWM](https://www.osintdojo.com/diagrams/dwm) — clearnet pivots ONLY.
+- Sources: LE takedowns, sanctions, blockchain analytics, academic/security research, court docs.
+- Tag unverified forum/leak mentions as low confidence; cross-validate with edgar_text_search.
+- Never attempt onion-service access or illicit marketplace interaction.
 
 ## Tool Calling Rules
-- shodan_search: build precise filter queries (e.g. "hostname:${req.target} OR ip:${req.target}")
-- tavily_search: use search_depth=advanced; issue 4–6 focused queries; for public social/indexed threads use investigation_profile=social with optional platform or embed site: filters; respect session Tavily time_range when provided
-- edgar_text_search: for US public filers — combine entity (name/ticker/CIK) with keywords and/or single_forms; corroborate material claims from filings with tavily_search
-- osintmap_lookup: use when the analyst needs vetted **public** country/region portals (registries, maps, directories); corroborate links — catalog is community-maintained
-- twitter_search: issue 2–4 searches per target covering different intents
-- theharvester_search: use default passive sources; never set dns_brute/takeover/screenshot/resolve/api_scan/shodan_lookup unless allow_active_scan=true
-- nmap_scan: NEVER call unless active scan is explicitly authorized; include authorization_ref
-- generate_report: call exactly once, at the end
+- shodan_search: precise filter expressions (hostname:${req.target} OR ip:${req.target})
+- tavily_search: search_depth=advanced, max_results=10; issue 8–15 focused queries across ALL categories
+- tavily_extract: after tavily_search, call this on the most important URLs (LinkedIn profiles, SEC filings, Scribd docs, court records, news articles) — batch up to 20 URLs per call with focus_query set to the investigation goal
+- theharvester_search: passive only (duckduckgo,crtsh) unless active scan authorized
+- edgar_text_search: combine entity + keywords + single_forms; corroborate with tavily_search
+- osintmap_lookup: vetted public country/region portals; corroborate links
+- twitter_search: 3–5 searches across company_monitoring, person_research, breach_leak_monitor, account_network
+- nmap_scan: NEVER call unless active scan explicitly authorized; always include authorization_ref
+- generate_report: call EXACTLY ONCE, as the VERY LAST tool
 
-## Principles
-- Every claim must trace to a tool call result — do not invent facts.
-- Prefer parallel coverage over depth on a single query.
-- Do not attempt to interpret or summarize findings yourself — that is the report generator's job.
-- Active scanning (nmap_scan) must never be called speculatively.
-- Twitter/X data is COMMUNITY tier by default; cross-validate important claims with tavily_search or shodan_search.
+## Analytical Standards
+- Every claim must trace to a tool call result — never invent facts.
+- Raise suspicion flags for: mismatched stated vs observed purpose, unusual corporate structures, sanctioned affiliates, abnormally high breach/leak signals.
+- Cross-validate: any single-source claim stays unverified until corroborated by a second independent tool.
+- Prefer breadth of query coverage over repeating the same query.
+- Missing data is itself a signal — note it in the report goal field.
 
 ## Current Session
 Target: ${req.target}

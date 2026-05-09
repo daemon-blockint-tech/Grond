@@ -239,34 +239,68 @@ def _build_key_takeaways(
 # ---------------------------------------------------------------------------
 
 _SECTION_SUMMARY_PROMPT = """\
-You are an intelligence analyst writing a section of an OSINT report.
-Write a 2–3 sentence factual summary of the "{section}" section for target "{target}".
-Base the summary ONLY on the provided evidence.  Do not speculate beyond the evidence.
-Format: plain prose, no bullet points.
+You are a senior intelligence analyst writing a section of a professional OSINT report (NKRI standard).
+Write a 3–5 sentence ANALYTICAL summary of the "{section}" section for target "{target}".
+Base the summary ONLY on the provided evidence. Do not speculate beyond the evidence.
+
+Requirements:
+- Be analytical, not merely descriptive. State WHAT the evidence MEANS, not just WHAT was found.
+- Highlight anomalies, inconsistencies, or gaps in the data.
+- If a claim appears in only one source, flag it as unverified.
+- End with one critical question that the analyst should investigate further.
+- Format: plain prose paragraphs, no bullet points.
 
 Evidence (JSON):
 {evidence_json}
 """
 
 _EXECUTIVE_SUMMARY_PROMPT = """\
-You are an intelligence analyst. Write a 4–5 sentence executive summary for an OSINT
-report on target "{target}". Cover: (1) the most significant risk, (2) overall attack
-surface size, (3) corroboration quality, (4) recommended immediate action.
-Base your summary ONLY on the findings provided. Do not invent facts.
+You are a senior intelligence analyst. Write a structured 6–8 sentence executive summary for an OSINT
+report on target "{target}" at NKRI intelligence standard.
+
+Structure your summary as follows:
+1. **Overview**: What is the target and what was investigated?
+2. **Most Significant Risk**: The single most important finding and why it matters.
+3. **Attack Surface / Exposure**: Scale of the infrastructure or information exposure.
+4. **Affiliations & Network**: Key persons, investors, backers, or hidden connections identified.
+5. **Intent Assessment**: What appears to be the entity's actual intent/purpose? Does stated purpose match observed behavior?
+6. **Corroboration Quality**: How well-corroborated are the findings? What remains unverified?
+7. **Critical Questions**: 2–3 unresolved questions the analyst must follow up on.
+8. **Recommended Immediate Action**: Specific, actionable next step for the analyst.
+
+Base your summary ONLY on the findings provided. Do not invent facts. Be analytical and direct.
 
 Top findings (JSON):
 {top_findings_json}
 """
 
+_CRITICAL_QUESTIONS_PROMPT = """\
+You are an intelligence analyst reviewing OSINT findings on target "{target}".
+Based on the evidence below, generate exactly 5 critical questions that remain unanswered.
+These questions should challenge assumptions, probe hidden connections, and direct further investigation.
 
-async def _anthropic_summary(prompt: str) -> str:
+Focus on:
+- Who really controls or benefits from the target entity?
+- Does the stated purpose match observed behavior?
+- What connections to other entities are suggested but unproven?
+- What data or sources are conspicuously absent?
+- What would change the risk assessment if discovered?
+
+Format: numbered list, each question on its own line. Questions only — no answers.
+
+Evidence summary (JSON):
+{evidence_json}
+"""
+
+
+async def _anthropic_summary(prompt: str, max_tokens: int = 2048) -> str:
     import anthropic  # type: ignore[import]
 
     settings = get_settings()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     msg = await client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=512,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text.strip()
@@ -289,14 +323,14 @@ class Reporter:
         self._audit = audit
         self._cfg = config or ReporterConfig()
 
-    async def _llm_or_fallback(self, prompt: str, fallback: str) -> str:
+    async def _llm_or_fallback(self, prompt: str, fallback: str, max_tokens: int = 2048) -> str:
         if not self._cfg.generate_llm_summaries:
             return fallback
         settings = get_settings()
         if not settings.anthropic_api_key.strip():
             return fallback
         try:
-            return await _anthropic_summary(prompt)
+            return await _anthropic_summary(prompt, max_tokens=max_tokens)
         except Exception as exc:
             log.warning("LLM summary generation failed", error=str(exc))
             return fallback
@@ -438,6 +472,39 @@ class Reporter:
 
         takeaways = _build_key_takeaways(target, primary, excluded_n, section_counts)
 
+        # 6. Generate critical questions (LLM)
+        critical_questions: list[str] = []
+        if primary and self._cfg.generate_llm_summaries:
+            cq_evs = sorted(primary, key=lambda e: e.confidence, reverse=True)[:15]
+            cq_json = json.dumps(
+                [
+                    {
+                        "claim": ev.claim,
+                        "claim_type": ev.claim_type,
+                        "confidence": ev.confidence,
+                        "verified": ev.verified,
+                        "value_snippet": str(ev.value.get("snippet", ""))[:200],
+                    }
+                    for ev in cq_evs
+                ],
+                default=str,
+                indent=2,
+            )
+            cq_prompt = _CRITICAL_QUESTIONS_PROMPT.format(
+                target=target, evidence_json=cq_json
+            )
+            cq_raw = await self._llm_or_fallback(cq_prompt, fallback="", max_tokens=1024)
+            if cq_raw:
+                # Parse numbered list lines
+                lines = [ln.strip() for ln in cq_raw.splitlines() if ln.strip()]
+                import re as _re
+                parsed = []
+                for line in lines:
+                    stripped = _re.sub(r"^\d+[\.\)]\s*", "", line)
+                    if stripped:
+                        parsed.append(stripped)
+                critical_questions = parsed[:5]
+
         report = IntelReport(
             target=target,
             goal=goal,
@@ -452,6 +519,7 @@ class Reporter:
             sources_used=sources_used,
             executive_summary=exec_summary,
             key_takeaways=takeaways,
+            critical_questions=critical_questions,
             sections=sections,
             evidence=filtered,
         )
