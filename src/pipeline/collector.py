@@ -24,7 +24,12 @@ from src.models.evidence import Evidence
 from src.pipeline.domain_relevance import build_tavily_queries_for_target
 from src.tools.nmap_tool import NmapAdapter, NmapInput, ScanProfile
 from src.tools.shodan_tool import ShodanAdapter, ShodanInput
-from src.tools.tavily_tool import TavilyAdapter, TavilyInput, build_public_social_tavily_queries
+from src.tools.tavily_tool import (
+    TavilyAdapter,
+    TavilyInput,
+    build_public_social_tavily_queries,
+    build_deep_osint_queries,
+)
 
 log = structlog.get_logger("grond.pipeline.collector")
 
@@ -93,13 +98,27 @@ class CollectionRequest:
     def effective_tavily_queries(self) -> list[str]:
         if self.tavily_query_templates:
             return [t.format(target=self.target) for t in self.tavily_query_templates]
-        base = build_tavily_queries_for_target(self.target)
+        # Deep OSINT fan-out: company + affiliations + key persons + intent + financial/legal + geo/infra
+        deep = build_deep_osint_queries(self.target)
+        # Also include domain-scoped site: queries for domain targets
+        site_scoped = build_tavily_queries_for_target(self.target)
+        # Merge: site-scoped first (domain-aligned priority), then deep queries
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        combined: list[str] = []
+        for q in site_scoped + deep:
+            if q not in seen:
+                seen.add(q)
+                combined.append(q)
         want_social = self.investigation_profile == "social" or (
             self.investigation_profile == "general" and goal_suggests_public_social(self.goal)
         )
         if want_social:
-            return base + build_public_social_tavily_queries(self.target)
-        return base
+            for q in build_public_social_tavily_queries(self.target):
+                if q not in seen:
+                    seen.add(q)
+                    combined.append(q)
+        return combined
 
     def tavily_topic_for_pipeline(self) -> str | None:
         if self.investigation_profile == "social":
