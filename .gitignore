@@ -18,6 +18,10 @@ node_modules/
 # Accidental npm lock in examples/ confuses Next (multiple lockfiles)
 examples/package-lock.json
 
+# Accidental research / dump files — never commit OSINT intel
+OSINT*.md
+https_*.md
+
 # Vendored scanner sources (clone locally; see recon/README.md)
 recon/nmap/
 recon/ncrack/
