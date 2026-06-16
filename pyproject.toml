@@ -13,7 +13,7 @@ requires-python = ">=3.12"
 dependencies = [
     # --- API ---
     "fastapi>=0.115.0",
-    "python-multipart>=0.0.9",  # FormData / file upload (e.g. /api/v1/tools/metadata)
+    "python-multipart>=0.0.31",  # FormData / file upload (e.g. /api/v1/tools/metadata)
     "uvicorn[standard]>=0.30.0",
 
     # --- LLM (reporter + enrichment) ---
