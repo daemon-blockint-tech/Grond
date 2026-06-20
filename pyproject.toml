@@ -24,7 +24,7 @@ dependencies = [
 
     # --- Data models ---
     "pydantic>=2.9.0",
-    "pydantic-settings>=2.6.0",
+    "pydantic-settings>=2.14.2",
 
     # --- OSINT tools ---
     "python-nmap>=0.7.1",
